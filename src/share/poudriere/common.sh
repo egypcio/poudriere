@@ -608,33 +608,68 @@ eargs() {
 }
 
 run_hook() {
-	local hookfile="${HOOKDIR}/${1}.sh"
-	local build_url log_url
-	shift
+	[ $# -ge 2 ] || eargs run_hook hook event args
+	local hook="$1"
+	local event="$2"
+	local build_url log log_url plugin_dir
+
+	shift 2
 
 	build_url build_url || :
 	log_url log_url || :
-	if [ -f "${hookfile}" ]; then
-		(
-			cd /
+	_log_path log || :
 
-			BUILD_URL="${build_url}" \
-			LOG_URL="${log_url}" \
-			POUDRIERE_BUILD_TYPE=${POUDRIERE_BUILD_TYPE} \
-			POUDRIERED="${POUDRIERED}" \
-			POUDRIERE_DATA="${POUDRIERE_DATA}" \
-			MASTERNAME="${MASTERNAME}" \
-			MASTERMNT="${MASTERMNT}" \
-			MY_JOBID="${MY_JOBID}" \
-			BUILDNAME="${BUILDNAME}" \
-			JAILNAME="${JAILNAME}" \
-			PTNAME="${PTNAME}" \
-			SETNAME="${SETNAME}" \
-			PACKAGES="${PACKAGES}" \
-			PACKAGES_ROOT="${PACKAGES_ROOT}" \
-			/bin/sh "${hookfile}" "$@"
-		)
+	run_hook_file "${HOOKDIR}/${hook}.sh" "${hook}" "${event}" \
+	    "${build_url}" "${log_url}" "${log}" "$@"
+
+	if [ -d "${HOOKDIR}/plugins" ]; then
+		for plugin_dir in ${HOOKDIR}/plugins/*; do
+			# Check empty dir
+			case "${plugin_dir}" in
+			"${HOOKDIR}/plugins/*") break ;;
+			esac
+			run_hook_file "${plugin_dir}/${hook}.sh" "${hook}" \
+			    "${event}" "${build_url}" "${log_url}" "${log}" \
+			    "$@"
+		done
 	fi
+}
+
+run_hook_file() {
+	[ $# -ge 6 ] || eargs run_hook_file hookfile hook event build_url \
+	    log_url log args
+	local hookfile="$1"
+	local hook="$2"
+	local event="$3"
+	local build_url="$4"
+	local log_url="$5"
+	local log="$6"
+	[ -f "${hookfile}" ] || return 0
+
+	shift 6
+
+	job_msg_dev "Running ${hookfile} for event '${hook}:${event}' args: ${@:-(null)}"
+
+	(
+		set +e
+		cd /
+		BUILD_URL="${build_url}" \
+		    LOG_URL="${log_url}" \
+		    LOG="${log}" \
+		    POUDRIERE_BUILD_TYPE=${POUDRIERE_BUILD_TYPE} \
+		    POUDRIERED="${POUDRIERED}" \
+		    POUDRIERE_DATA="${POUDRIERE_DATA}" \
+		    MASTERNAME="${MASTERNAME}" \
+		    MASTERMNT="${MASTERMNT}" \
+		    MY_JOBID="${MY_JOBID}" \
+		    BUILDNAME="${BUILDNAME}" \
+		    JAILNAME="${JAILNAME}" \
+		    PTNAME="${PTNAME}" \
+		    SETNAME="${SETNAME}" \
+		    PACKAGES="${PACKAGES}" \
+		    PACKAGES_ROOT="${PACKAGES_ROOT}" \
+		    /bin/sh "${hookfile}" "${event}" "$@"
+	) || err 1 "Hook ${hookfile} for '${hook}:${event}' returned non-zero"
 	return 0
 }
 
@@ -2503,7 +2538,7 @@ setup_makeconf() {
 	local name=$2
 	local ptname=$3
 	local setname=$4
-	local makeconf opt
+	local makeconf opt plugin_dir
 	local arch host_arch
 
 	get_host_arch host_arch
@@ -2530,8 +2565,19 @@ setup_makeconf() {
 	[ -n "${setname}" ] && makeconf="${makeconf} ${name}-${setname} \
 		    ${name}-${ptname}-${setname}"
 	for opt in ${makeconf}; do
-		append_make ${opt} ${dst_makeconf}
+		append_make "${POUDRIERED}" "${opt}" "${dst_makeconf}"
 	done
+
+	# Check for and load plugin make.conf files
+	if [ -d "${HOOKDIR}/plugins" ]; then
+		for plugin_dir in ${HOOKDIR}/plugins/*; do
+			# Check empty dir
+			case "${plugin_dir}" in
+			"${HOOKDIR}/plugins/*") break ;;
+			esac
+			append_make "${plugin_dir}" "-" "${dst_makeconf}"
+		done
+	fi
 
 	# We will handle DEVELOPER for testing when appropriate
 	if grep -q '^DEVELOPER=' ${dst_makeconf}; then
@@ -3323,6 +3369,10 @@ start_builder() {
 start_builders() {
 	local arch=$(injail uname -p)
 
+	msg "Starting/Cloning builders"
+	bset status "starting_jobs:"
+	run_hook start_builders start
+
 	bset builders "${JOBS}"
 	bset status "starting_builders:"
 	parallel_start
@@ -3330,6 +3380,8 @@ start_builders() {
 		parallel_run start_builder ${j} ${arch}
 	done
 	parallel_stop
+
+	run_hook start_builders stop
 }
 
 stop_builder() {
@@ -3471,9 +3523,8 @@ job_done() {
 	# CWD is MASTERMNT/.p/pool
 
 	# Failure to find this indicates the job is already done.
-	hash_get builder_pkgnames "${j}" pkgname || return 1
+	hash_remove builder_pkgnames "${j}" pkgname || return 1
 	hash_unset builder_pids "${j}"
-	hash_unset builder_pkgnames "${j}"
 	unlink "../var/run/${j}.pid"
 	_bget status ${j} status
 	rmdir "../building/${pkgname}"
@@ -3493,6 +3544,8 @@ build_queue() {
 	local builders_idle idle_only timeout log
 
 	_log_path log
+
+	run_hook build_queue start
 
 	mkfifo ${MASTERMNT}/.p/builders.pipe
 	exec 6<> ${MASTERMNT}/.p/builders.pipe
@@ -3519,7 +3572,8 @@ build_queue() {
 				fi
 				job_done "${j}"
 				# Set a 0 timeout to quickly rescan for idle
-				# builders to toss a job at.
+				# builders to toss a job at since the queue
+				# may now be unblocked.
 				[ ${queue_empty} -eq 0 -a \
 				    ${builders_idle} -eq 1 ] && timeout=0
 			fi
@@ -3536,8 +3590,6 @@ build_queue() {
 				# are empty
 				queue_empty && queue_empty=1
 
-				# Pool is waiting on dep, wait until a build
-				# is done before checking the queue again
 				builders_idle=1
 			else
 				MY_JOBID="${j}" \
@@ -3548,8 +3600,6 @@ build_queue() {
 				hash_set builder_pids "${j}" "${pid}"
 				hash_set builder_pkgnames "${j}" "${pkgname}"
 
-				# A new job is spawned, try to read the queue
-				# just to keep things moving
 				builders_active=1
 			fi
 		done
@@ -3605,6 +3655,8 @@ build_queue() {
 		fi
 	done
 	exec 6<&- 6>&-
+
+	run_hook build_queue stop
 }
 
 calculate_tobuild() {
@@ -3689,8 +3741,6 @@ parallel_build() {
 	msg "Building ${nremaining} packages using ${PARALLEL_JOBS} builders"
 	JOBS="$(jot -w %02d ${PARALLEL_JOBS})"
 
-	bset status "starting_jobs:"
-	msg "Starting/Cloning builders"
 	start_builders
 
 	coprocess_start pkg_cacher
@@ -3742,7 +3792,7 @@ crashed_build() {
 		    "${COLOR_FAIL}Finished ${COLOR_PORT}${origin} | ${pkgname}${COLOR_FAIL}: Failed: ${COLOR_PHASE}${failed_phase}"
 		run_hook pkgbuild failed "${origin}" "${pkgname}" \
 		    "${failed_phase}" \
-		    "${log}/logs/errors/${pkgname}.log"
+		    "${log}/logs/errors/${pkgname}.log" >&3
 	fi
 	clean_pool "${pkgname}" "${origin}" "${failed_phase}"
 	stop_build "${pkgname}" "${origin}" 1 >> "${log}/logs/${pkgname}.log"
@@ -3766,7 +3816,7 @@ clean_pool() {
 		badd ports.skipped "${skipped_origin} ${skipped_pkgname} ${pkgname}"
 		COLOR_ARROW="${COLOR_SKIP}" \
 		    job_msg "${COLOR_SKIP}Skipping ${COLOR_PORT}${skipped_origin} | ${skipped_pkgname}${COLOR_SKIP}: Dependent port ${COLOR_PORT}${port} | ${pkgname}${COLOR_SKIP} ${clean_rdepends}"
-		run_hook pkgbuild skipped "${skipped_origin}" "${skipped_pkgname}" "${port}"
+		run_hook pkgbuild skipped "${skipped_origin}" "${skipped_pkgname}" "${port}" >&3
 	done
 
 	(
@@ -3806,28 +3856,28 @@ build_pkg() {
 	clean_rdepends=
 	trap '' SIGTSTP
 	PKGNAME="${pkgname}" # set ASAP so jail_cleanup() can use it
+	setproctitle "build_pkg (${pkgname})" || :
+
+	# Don't show timestamps in msg() which goes to logs, only job_msg()
+	# which goes to master
+	NO_ELAPSED_IN_MSG=1
+	TIME_START_JOB=$(clock -monotonic)
+	colorize_job_id COLOR_JOBID "${MY_JOBID}"
+
 	get_originspec_from_pkgname ORIGINSPEC "${pkgname}"
 	originspec_decode "${ORIGINSPEC}" port DEPENDS_ARGS FLAVOR
+	bset_job_status "starting" "${port}"
 	if [ -z "${FLAVOR}" ]; then
 		shash_get pkgname-flavor "${pkgname}" FLAVOR || FLAVOR=
 	fi
+	job_msg "Building ${COLOR_PORT}${port}${FLAVOR:+@${FLAVOR}} | ${PKGNAME}${COLOR_RESET}"
+
 	MAKE_ARGS="${DEPENDS_ARGS}${FLAVOR:+ FLAVOR=${FLAVOR}}"
 	portdir="${PORTSDIR}/${port}"
 
 	if [ -n "${MAX_MEMORY_BYTES}" -o -n "${MAX_FILES}" ]; then
 		JEXEC_LIMITS=1
 	fi
-
-	setproctitle "build_pkg (${pkgname})" || :
-
-	TIME_START_JOB=$(clock -monotonic)
-	# Don't show timestamps in msg() which goes to logs, only job_msg()
-	# which goes to master
-	NO_ELAPSED_IN_MSG=1
-	colorize_job_id COLOR_JOBID "${MY_JOBID}"
-
-	job_msg "Building ${COLOR_PORT}${port}${FLAVOR:+@${FLAVOR}} | ${PKGNAME}${COLOR_RESET}"
-	bset_job_status "starting" "${port}"
 
 	if [ "${USE_JEXECD}" = "no" ]; then
 		# Kill everything in jail first
@@ -3874,7 +3924,7 @@ build_pkg() {
 		badd ports.ignored "${port} ${PKGNAME} ${ignore}"
 		COLOR_ARROW="${COLOR_IGNORE}" job_msg "${COLOR_IGNORE}Finished ${COLOR_PORT}${port}${FLAVOR:+@${FLAVOR}} | ${PKGNAME}${COLOR_IGNORE}: Ignored: ${ignore}"
 		clean_rdepends="ignored"
-		run_hook pkgbuild ignored "${port}" "${PKGNAME}" "${ignore}"
+		run_hook pkgbuild ignored "${port}" "${PKGNAME}" "${ignore}" >&3
 	else
 		build_port "${ORIGINSPEC}" || ret=$?
 		if [ ${ret} -ne 0 ]; then
@@ -3900,7 +3950,7 @@ build_pkg() {
 		if [ ${build_failed} -eq 0 ]; then
 			badd ports.built "${port} ${PKGNAME} ${elapsed}"
 			COLOR_ARROW="${COLOR_SUCCESS}" job_msg "${COLOR_SUCCESS}Finished ${COLOR_PORT}${port}${FLAVOR:+@${FLAVOR}} | ${PKGNAME}${COLOR_SUCCESS}: Success"
-			run_hook pkgbuild success "${port}" "${PKGNAME}"
+			run_hook pkgbuild success "${port}" "${PKGNAME}" >&3
 			# Cache information for next run
 			pkg_cacher_queue "${port}" "${pkgname}" || :
 		else
@@ -3912,7 +3962,7 @@ build_pkg() {
 			badd ports.failed "${port} ${PKGNAME} ${failed_phase} ${errortype} ${elapsed}"
 			COLOR_ARROW="${COLOR_FAIL}" job_msg "${COLOR_FAIL}Finished ${COLOR_PORT}${port}${FLAVOR:+@${FLAVOR}} | ${PKGNAME}${COLOR_FAIL}: Failed: ${COLOR_PHASE}${failed_phase}"
 			run_hook pkgbuild failed "${port}" "${PKGNAME}" "${failed_phase}" \
-				"${log}/logs/errors/${PKGNAME}.log"
+				"${log}/logs/errors/${PKGNAME}.log" >&3
 			# ret=2 is a test failure
 			if [ ${ret} -eq 2 ]; then
 				clean_rdepends=
@@ -4946,14 +4996,17 @@ delete_old_pkg() {
 delete_old_pkgs() {
 
 	msg "Checking packages for incremental rebuild needs"
+	run_hook delete_old_pkgs start
 
-	package_dir_exists_and_has_packages || return 0
+	if package_dir_exists_and_has_packages; then
+		parallel_start
+		for pkg in ${PACKAGES}/All/*.${PKG_EXT}; do
+			parallel_run delete_old_pkg "${pkg}"
+		done
+		parallel_stop
+	fi
 
-	parallel_start
-	for pkg in ${PACKAGES}/All/*.${PKG_EXT}; do
-		parallel_run delete_old_pkg "${pkg}"
-	done
-	parallel_stop
+	run_hook delete_old_pkgs stop
 }
 
 ## Pick the next package from the "ready to build" queue in pool/
@@ -5266,6 +5319,7 @@ gather_port_vars() {
 
 	msg "Gathering ports metadata"
 	bset status "gatheringportvars:"
+	run_hook gather_port_vars start
 
 	:> "all_pkgs"
 	[ ${ALL} -eq 0 ] && :> "all_pkgbases"
@@ -5426,6 +5480,7 @@ gather_port_vars() {
 		err 1 "Gather port queues not empty"
 	fi
 	unlink "${qlist}" || :
+	run_hook gather_port_vars stop
 }
 
 gather_port_vars_port() {
@@ -5726,6 +5781,7 @@ compute_deps() {
 
 	msg "Calculating ports order and dependencies"
 	bset status "computingdeps:"
+	run_hook compute_deps start
 
 	:> "pkg_deps.unsorted"
 
@@ -5751,7 +5807,7 @@ compute_deps() {
 	)
 
 	unlink "pkg_deps.unsorted"
-
+	run_hook compute_deps stop
 	return 0
 }
 
@@ -5778,10 +5834,11 @@ compute_deps_pkg() {
 	for dep_originspec in ${deps}; do
 		if ! get_pkgname_from_originspec "${dep_originspec}" \
 		    dep_pkgname; then
-			originspec_decode "${dep_originspec}" dep_origin '' ''
+			originspec_decode "${dep_originspec}" dep_origin '' \
+			    dep_flavor
 			[ ${ALL} -eq 0 ] && \
-			    err 1 "compute_deps_pkg failed to lookup pkgname for ${dep_originspec} processing package ${pkgname} -- Does ${dep_origin} provide the '${dep_flavor}' FLAVOR?"
-			err 1 "compute_deps_pkg failed to lookup pkgname for ${dep_originspec} processing package ${pkgname} -- Is SUBDIR+=${dep_originspec#*/} missing in ${dep_originspec%/*}/Makefile and does the port provide the '${dep_flavor}' FLAVOR?"
+			    err 1 "compute_deps_pkg failed to lookup pkgname for ${dep_originspec} processing package ${pkgname} from ${originspec} -- Does ${dep_origin} provide the '${dep_flavor}' FLAVOR?"
+			err 1 "compute_deps_pkg failed to lookup pkgname for ${dep_originspec} processing package ${pkgname} from ${originspec} -- Is SUBDIR+=${dep_originspec#*/} missing in ${dep_originspec%/*}/Makefile and does the port provide the '${dep_flavor}' FLAVOR?"
 		fi
 		msg_debug "compute_deps_pkg: Will build ${dep_originspec} for ${pkgname}"
 		:> "${pkg_pooldir}/${dep_pkgname}"
@@ -6710,14 +6767,15 @@ balance_pool() {
 }
 
 append_make() {
-	[ $# -ne 2 ] && eargs append_make src_makeconf dst_makeconf
-	local src_makeconf=$1
-	local dst_makeconf=$2
+	[ $# -ne 3 ] && eargs append_make srcdir src_makeconf dst_makeconf
+	local srcdir="$1"
+	local src_makeconf=$2
+	local dst_makeconf=$3
 
 	if [ "${src_makeconf}" = "-" ]; then
-		src_makeconf="${POUDRIERED}/make.conf"
+		src_makeconf="${srcdir}/make.conf"
 	else
-		src_makeconf="${POUDRIERED}/${src_makeconf}-make.conf"
+		src_makeconf="${srcdir}/${src_makeconf}-make.conf"
 	fi
 
 	[ -f "${src_makeconf}" ] || return 0

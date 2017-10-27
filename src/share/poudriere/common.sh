@@ -2180,7 +2180,6 @@ setup_xdev() {
 	SIZE=/nxb-bin/usr/bin/size
 	STRIPBIN=/nxb-bin/usr/bin/strip
 	SED=/nxb-bin/usr/bin/sed
-	READELF=/nxb-bin/usr/bin/readelf
 	RANLIB=/nxb-bin/usr/bin/ranlib
 	YACC=/nxb-bin/usr/bin/yacc
 	MAKE=/nxb-bin/usr/bin/make
@@ -2196,7 +2195,8 @@ setup_xdev() {
 			usr/bin/makewhatis \
 			usr/bin/find usr/bin/gzcat usr/bin/awk \
 			usr/bin/touch usr/bin/sed usr/bin/patch \
-			usr/bin/install usr/bin/gunzip usr/bin/sort \
+			usr/bin/install usr/bin/gunzip \
+			usr/bin/readelf usr/bin/sort \
 			usr/bin/tar usr/bin/xargs usr/sbin/chown bin/cp \
 			bin/cat bin/chmod bin/echo bin/expr \
 			bin/hostname bin/ln bin/ls bin/mkdir bin/mv \
@@ -2379,9 +2379,9 @@ jail_start() {
 		setup_xdev "${tomnt}" "${arch%.*}"
 
 		# QEMU is really slow. Extend the time significantly.
-		msg "Raising MAX_EXECUTION_TIME and NOHANG_TIME for QEMU"
-		MAX_EXECUTION_TIME=864000
-		NOHANG_TIME=72000
+		msg "Raising MAX_EXECUTION_TIME and NOHANG_TIME for QEMU from QEMU_ values"
+		MAX_EXECUTION_TIME=${QEMU_MAX_EXECUTION_TIME}
+		NOHANG_TIME=${QEMU_NOHANG_TIME}
 		# Setup native-xtools overrides.
 		cat >> "${tomnt}/etc/make.conf" <<-EOF
 		.sinclude "/etc/make.nxb.conf"
@@ -4102,6 +4102,22 @@ prefix_output() {
 
 : ${ORIGINSPEC_SEP:="@"}
 : ${FLAVOR_DEFAULT:="-"}
+: ${FLAVOR_ALL:="all"}
+
+build_all_flavors() {
+	[ $# -eq 1 ] || eargs build_all_flavors originspec
+	local originspec="$1"
+	local origin build_all
+
+	[ "${ALL}" -eq 1 ] && return 0
+	[ "${FLAVOR_DEFAULT_ALL}" = "yes" ] && return 0
+	originspec_decode "${originspec}" origin '' ''
+	shash_get origin-flavor-all "${origin}" build_all || build_all=0
+	[ "${build_all}" -eq 1 ] && return 0
+
+	# bulk and testport
+	return 1
+}
 
 # ORIGINSPEC is: ORIGIN@FLAVOR@DEPENDS_ARGS
 originspec_decode() {
@@ -5335,71 +5351,81 @@ gather_port_vars() {
 		[ ${ALL} -eq 0 ] && [ -n "${flavor}" ] && \
 		    ! have_ports_feature FLAVORS && \
 		    err 1 "Trying to build FLAVOR-specific ${originspec} but ports tree has no FLAVORS support."
-		if [ -d "../${PORTSDIR}/${origin}" ]; then
-			rdep="listed"
-			# For -a we skip the initial gatherqueue
-			if [ ${ALL} -eq 1 ]; then
-				[ -n "${flavor}" ] && \
-				    err 1 "Flavor ${originspec} with ALL=1"
-				parallel_run \
-				    prefix_stderr_quick \
-				    "(${COLOR_PORT}${originspec}${COLOR_RESET})${COLOR_WARN}" \
-				    gather_port_vars_port "${originspec}" \
-				    "${rdep}" || \
-				    set_dep_fatal_error
-				continue
-			fi
-			# Otherwise let's utilize the gatherqueue to simplify
-			# FLAVOR handling.
-			qorigin="gqueue/${origin%/*}!${origin#*/}"
-
-			# If we were passed a FLAVOR-specific origin, we
-			# need to delay it into the flavorqueue because
-			# it is possible the list has multiple FLAVORS
-			# of the origin specified or even the main port.
-			# We want to ensure that the main port is looked up
-			# first and then FLAVOR-specific ones are processed.
-			if [ -n "${flavor}" ] || [ -n "${dep_args}" ]; then
-				# We will delay the FLAVOR-specific into
-				# the flavorqueue and process the main port
-				# here as long as it hasn't already.
-				# Don't worry about duplicates from user list.
-				mkdir -p \
-				    "fqueue/${originspec%/*}!${originspec#*/}"
-				echo "${rdep}" > \
-				    "fqueue/${originspec%/*}!${originspec#*/}/rdep"
-				msg_debug "queueing ${originspec} into flavorqueue (rdep=${rdep})"
-				# For DEPENDS_ARGS we can skip bothering with
-				# the gatherqueue just simply delay into the
-				# flavorqueue.
-				if [ -n "${dep_args}" ]; then
-					continue
-				fi
-				# Now handle adding the main port without
-				# FLAVOR.  Only do this if the main port
-				# wasn't already listed.  The 'metadata'
-				# will cause gather_port_vars_port to not
-				# actually queue it for build unless it
-				# is discovered to be the default.
-				if [ -d "${qorigin}" ]; then
-					rdep=
-				elif [ -n "${flavor}" ]; then
-					rdep="metadata ${flavor} listed"
-				fi
-			fi
-
-			# Duplicate are possible from a user list, it's fine.
-			mkdir -p "${qorigin}"
-			msg_debug "queueing ${origin} into gatherqueue (rdep=${rdep})"
-			[ -n "${rdep}" ] && echo "${rdep}" > "${qorigin}/rdep"
-		else
+		if ! [ -d "../${PORTSDIR}/${origin}" ]; then
 			if [ ${ALL} -eq 1 ]; then
 				msg_warn "Nonexistent origin listed in category Makefiles: ${COLOR_PORT}${origin}"
 			else
 				msg_error "Nonexistent origin listed for build: ${COLOR_PORT}${origin}"
 				set_dep_fatal_error
 			fi
+			continue
 		fi
+		rdep="listed"
+		# For -a we skip the initial gatherqueue
+		if [ ${ALL} -eq 1 ]; then
+			[ -n "${flavor}" ] && \
+			    err 1 "Flavor ${originspec} with ALL=1"
+			parallel_run \
+			    prefix_stderr_quick \
+			    "(${COLOR_PORT}${originspec}${COLOR_RESET})${COLOR_WARN}" \
+			    gather_port_vars_port "${originspec}" \
+			    "${rdep}" || \
+			    set_dep_fatal_error
+			continue
+		fi
+		# Otherwise let's utilize the gatherqueue to simplify
+		# FLAVOR handling.
+		qorigin="gqueue/${origin%/*}!${origin#*/}"
+
+		# For FLAVOR=all cache that request somewhere for
+		# gather_port_vars_port to use later.  Other
+		# methods of passing it down the queue are too complex.
+		if [ "${flavor}" = "${FLAVOR_ALL}" ]; then
+			unset flavor
+			if [ "${FLAVOR_DEFAULT_ALL}" != "yes" ]; then
+				shash_set origin-flavor-all "${origin}" 1
+			fi
+		fi
+
+		# If we were passed a FLAVOR-specific origin, we
+		# need to delay it into the flavorqueue because
+		# it is possible the list has multiple FLAVORS
+		# of the origin specified or even the main port.
+		# We want to ensure that the main port is looked up
+		# first and then FLAVOR-specific ones are processed.
+		if [ -n "${flavor}" ] || [ -n "${dep_args}" ]; then
+			# We will delay the FLAVOR-specific into
+			# the flavorqueue and process the main port
+			# here as long as it hasn't already.
+			# Don't worry about duplicates from user list.
+			mkdir -p \
+			    "fqueue/${originspec%/*}!${originspec#*/}"
+			echo "${rdep}" > \
+			    "fqueue/${originspec%/*}!${originspec#*/}/rdep"
+			msg_debug "queueing ${originspec} into flavorqueue (rdep=${rdep})"
+			# For DEPENDS_ARGS we can skip bothering with
+			# the gatherqueue just simply delay into the
+			# flavorqueue.
+			if [ -n "${dep_args}" ]; then
+				continue
+			fi
+			# Now handle adding the main port without
+			# FLAVOR.  Only do this if the main port
+			# wasn't already listed.  The 'metadata'
+			# will cause gather_port_vars_port to not
+			# actually queue it for build unless it
+			# is discovered to be the default.
+			if [ -d "${qorigin}" ]; then
+				rdep=
+			elif [ -n "${flavor}" ]; then
+				rdep="metadata ${flavor} listed"
+			fi
+		fi
+
+		# Duplicate are possible from a user list, it's fine.
+		mkdir -p "${qorigin}"
+		msg_debug "queueing ${origin} into gatherqueue (rdep=${rdep})"
+		[ -n "${rdep}" ] && echo "${rdep}" > "${qorigin}/rdep"
 	done
 	if ! parallel_stop || check_dep_fatal_error; then
 		err 1 "Fatal errors encountered gathering initial ports metadata"
@@ -5585,7 +5611,7 @@ gather_port_vars_port() {
 		# Check if we have the default FLAVOR sitting in the
 		# flavorqueue and don't skip if so.
 		if [ "${queued_flavor}" != "${default_flavor}" ]; then
-			msg_debug "SKIPPING ${originspec}"
+			msg_debug "SKIPPING ${originspec} - metadata lookup queued=${queued_flavor} default=${default_flavor}"
 			return 0
 		fi
 		# We're keeping this metadata lookup as its original rdep
@@ -5611,7 +5637,9 @@ gather_port_vars_port() {
 	# this was the default originspec and this originspec was
 	# listed to build.
 	if [ "${rdep}" = "listed" -a \
-	    -z "${origin_flavor}" -a -n "${flavors}" ]; then
+	    -z "${origin_flavor}" -a -n "${flavors}" ] && \
+	    build_all_flavors "${originspec}"; then
+		msg_verbose "Will build all flavors for ${COLOR_PORT}${originspec}${COLOR_RESET}: ${flavors}"
 		for dep_flavor in ${flavors}; do
 			# Skip default FLAVOR
 			[ "${flavor}" = "${dep_flavor}" ] && continue
@@ -6382,6 +6410,10 @@ prepare_ports() {
 			err ${ret} "deps_fetch_vars failed for ${ORIGINSPEC}"
 			;;
 		esac
+		if have_ports_feature FLAVORS && [ -n "${FLAVORS}" ] && \
+		    [ "${FLAVOR_DEFAULT_ALL}" = "yes" ]; then
+			msg_warn "Only testing first flavor '${FLAVOR}', use 'bulk -t' to test all flavors"
+		fi
 		for dep_originspec in $(listed_ports); do
 			msg_verbose "${COLOR_PORT}${ORIGINSPEC}${COLOR_RESET} depends on ${COLOR_PORT}${dep_originspec}"
 		done
@@ -6450,7 +6482,8 @@ prepare_ports() {
 
 	if was_a_bulk_run; then
 		# Stash dependency graph
-		cp -f "${MASTERMNT}/.p/pkg_deps" "${log}/.poudriere.deps%"
+		cp -f "${MASTERMNT}/.p/pkg_deps" "${log}/.poudriere.pkg_deps%"
+		cp -f "${MASTERMNT}/.p/all_pkgs" "${log}/.poudriere.all_pkgs%"
 
 		if [ ${JAIL_NEEDS_CLEAN} -eq 1 ]; then
 			msg_n "Cleaning all packages due to newer version of the jail..."
@@ -7210,8 +7243,10 @@ DRY_RUN=0
 
 # Be sure to update poudriere.conf to document the default when changing these
 : ${RESOLV_CONF="/etc/resolv.conf"}
-: ${MAX_EXECUTION_TIME:=86400}         # 24 hours for 1 command
+: ${MAX_EXECUTION_TIME:=86400}         # 24 hours for 1 command (phase)
 : ${NOHANG_TIME:=7200}                 # 120 minutes with no log update
+: ${QEMU_MAX_EXECUTION_TIME:=345600}   # 4 days for 1 command (phase)
+: ${QEMU_NOHANG_TIME:=21600}           # 6 hours with no log update
 : ${TIMESTAMP_LOGS:=no}
 : ${ATOMIC_PACKAGE_REPOSITORY:=yes}
 : ${KEEP_OLD_PACKAGES:=no}
@@ -7224,6 +7259,7 @@ DRY_RUN=0
 : ${NO_RESTRICTED:=no}
 : ${USE_COLORS:=yes}
 : ${ALLOW_MAKE_JOBS_PACKAGES=pkg ccache}
+: ${FLAVOR_DEFAULT_ALL:=no}
 
 : ${POUDRIERE_TMPDIR:=$(command mktemp -dt poudriere)}
 : ${SHASH_VAR_PATH_DEFAULT:=${POUDRIERE_TMPDIR}}

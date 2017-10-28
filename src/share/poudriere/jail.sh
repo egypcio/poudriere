@@ -294,6 +294,7 @@ update_jail() {
 		fi
 		rm -f ${JAILMNT}/usr/sbin/freebsd-update.fixed
 		if [ ${QEMU_EMULATING} -eq 1 ]; then
+			[ -n "${EMULATOR}" ] || err 1 "No EMULATOR set"
 			rm -f "${JAILMNT}${EMULATOR}"
 			# Try to cleanup the lingering directory structure
 			emulator_dir="${EMULATOR%/*}"
@@ -478,7 +479,7 @@ build_native_xtools() {
 	    ${MAKEWORLDARGS} || err 1 "Failed to 'make native-xtools' in ${XDEV_SRC}"
 	XDEV_TOOLS=$(TARGET=${TARGET} TARGET_ARCH=${TARGET_ARCH} \
 	    ${MAKE_CMD} -C ${XDEV_SRC} -f Makefile.inc1 -V NXBDESTDIR)
-	: ${XDEV_TOOLS:=/usr/obj/${TARGET}.${TARGET_ARCH}/nxb-bin}
+	: ${XDEV_TOOLS:=${MAKEOBJDIRPREFIX:-/usr/obj}/${TARGET}.${TARGET_ARCH}/nxb-bin}
 	rm -rf ${JAILMNT}/nxb-bin || err 1 "Failed to remove old native-xtools"
 	mv ${XDEV_TOOLS} ${JAILMNT} || err 1 "Failed to move native-xtools"
 	# The files are hard linked at bulk jail startup now.
@@ -751,6 +752,8 @@ install_from_tar() {
 create_jail() {
 	[ "${JAILNAME#*.*}" = "${JAILNAME}" ] ||
 		err 1 "The jailname cannot contain a period (.). See jail(8)"
+	[ "${JAILNAME#*:*}" = "${JAILNAME}" ] ||
+		err 1 "The jailname cannot contain a colon (:)."
 
 	if [ "${METHOD}" = "null" ]; then
 		[ -z "${JAILMNT}" ] && \
@@ -1147,8 +1150,8 @@ case "${CREATE}${INFO}${LIST}${STOP}${START}${DELETE}${UPDATE}${RENAME}" in
 		esac
 		jail_exists ${JAILNAME} && \
 		    err 2 "The jail ${JAILNAME} already exists"
-		check_emulation "${REALARCH}" "${ARCH}"
 		maybe_run_queued "${saved_argv}"
+		check_emulation "${REALARCH}" "${ARCH}"
 		create_jail
 		;;
 	01000000)

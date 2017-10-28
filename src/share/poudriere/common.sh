@@ -811,9 +811,9 @@ buildlog_start() {
 }
 
 buildlog_stop() {
-	[ $# -eq 3 ] || eargs buildlog_stop pkgname origin build_failed
+	[ $# -eq 3 ] || eargs buildlog_stop pkgname originspec build_failed
 	local pkgname="$1"
-	local origin=$2
+	local originspec=$2
 	local build_failed="$3"
 	local log
 	local buildtime
@@ -825,7 +825,7 @@ buildlog_stop() {
 		awk -F'!' '{print $2}' \
 	)
 
-	echo "build of ${origin} | ${pkgname} ended at $(date)"
+	echo "build of ${originspec} | ${pkgname} ended at $(date)"
 	echo "build time: ${buildtime}"
 	[ ${build_failed} -gt 0 ] && echo "!!! build failure encountered !!!"
 
@@ -1006,11 +1006,11 @@ bset() {
 }
 
 bset_job_status() {
-	[ $# -eq 2 ] || eargs bset_job_status status origin
+	[ $# -eq 2 ] || eargs bset_job_status status originspec
 	local status="$1"
-	local origin="$2"
+	local originspec="$2"
 
-	bset ${MY_JOBID} status "${status}:${origin}:${PKGNAME}:${TIME_START_JOB:-${TIME_START}}:$(clock -monotonic)"
+	bset ${MY_JOBID} status "${status}:${originspec}:${PKGNAME}:${TIME_START_JOB:-${TIME_START}}:$(clock -monotonic)"
 }
 
 badd() {
@@ -2156,6 +2156,7 @@ qemu_install() {
 	local mnt="$1"
 
 	msg "Copying latest version of the emulator from: ${EMULATOR}"
+	[ -n "${EMULATOR}" ] || err 1 "No EMULATOR set"
 	mkdir -p "${mnt}${EMULATOR%/*}"
 	cp -f "${EMULATOR}" "${mnt}${EMULATOR}"
 }
@@ -2797,11 +2798,11 @@ check_leftovers() {
 }
 
 check_fs_violation() {
-	[ $# -eq 6 ] || eargs check_fs_violation mnt mtree_target port \
+	[ $# -eq 6 ] || eargs check_fs_violation mnt mtree_target originspec \
 	    status_msg err_msg status_value
 	local mnt="$1"
 	local mtree_target="$2"
-	local port="$3"
+	local originspec="$3"
 	local status_msg="$4"
 	local err_msg="$5"
 	local status_value="$6"
@@ -2817,8 +2818,8 @@ check_fs_violation() {
 	if [ -s ${tmpfile} ]; then
 		msg "Error: ${err_msg}"
 		cat ${tmpfile}
-		bset_job_status "${status_value}" "${port}"
-		job_msg_verbose "Status   ${COLOR_PORT}${port} | ${PKGNAME}${COLOR_RESET}: ${status_value}"
+		bset_job_status "${status_value}" "${originspec}"
+		job_msg_verbose "Status   ${COLOR_PORT}${originspec} | ${PKGNAME}${COLOR_RESET}: ${status_value}"
 		ret=1
 	fi
 	unlink ${tmpfile}
@@ -2832,14 +2833,14 @@ gather_distfiles() {
 	local from=$(realpath $2)
 	local to=$(realpath $3)
 	local sub dists d tosubd specials special origin
-	local dep_originspec pkgname
+	local dep_originspec pkgname flavor
 
 	port_var_fetch_originspec "${originspec}" \
 	    DIST_SUBDIR sub \
 	    ALLFILES dists || \
 	    err 1 "Failed to lookup distfiles for ${originspec}"
 
-	originspec_decode "${originspec}" origin '' ''
+	originspec_decode "${originspec}" origin '' flavor
 	if [ "${ORIGINSPEC}" = "${originspec}" ]; then
 		# Building main port
 		pkgname="${PKGNAME}"
@@ -2850,7 +2851,7 @@ gather_distfiles() {
 	fi
 	shash_get pkgname-depend_specials "${pkgname}" specials || specials=
 
-	job_msg_dev "${COLOR_PORT}${origin} | ${PKGNAME}${COLOR_RESET}: distfiles ${from} -> ${to}"
+	job_msg_dev "${COLOR_PORT}${origin}${flavor:+@${flavor}} | ${PKGNAME}${COLOR_RESET}: distfiles ${from} -> ${to}"
 	for d in ${dists}; do
 		[ -f ${from}/${sub}/${d} ] || continue
 		tosubd=${to}/${sub}/${d}
@@ -2870,7 +2871,7 @@ gather_distfiles() {
 _real_build_port() {
 	[ $# -ne 1 ] && eargs _real_build_port originspec
 	local originspec="$1"
-	local port portdir
+	local port flavor portdir
 	local mnt
 	local log
 	local network
@@ -2885,7 +2886,7 @@ _real_build_port() {
 	_my_path mnt
 	_log_path log
 
-	originspec_decode "${originspec}" port '' ''
+	originspec_decode "${originspec}" port '' flavor
 	portdir="/usr/ports/${port}"
 
 	if [ "${BUILD_AS_NON_ROOT}" = "yes" ]; then
@@ -2911,7 +2912,7 @@ _real_build_port() {
 	for jpkg in ${ALLOW_MAKE_JOBS_PACKAGES}; do
 		case "${PKGNAME%-*}" in
 		${jpkg})
-			job_msg_verbose "Allowing MAKE_JOBS for ${COLOR_PORT}${port} | ${PKGNAME}${COLOR_RESET}"
+			job_msg_verbose "Allowing MAKE_JOBS for ${COLOR_PORT}${port}${flavor:+@${flavor}} | ${PKGNAME}${COLOR_RESET}"
 			sed -i '' '/DISABLE_MAKE_JOBS=poudriere/d' \
 			    ${mnt}/etc/make.conf
 			break
@@ -2922,8 +2923,8 @@ _real_build_port() {
 	for jpkg in ${ALLOW_NETWORKING_PACKAGES}; do
 		case "${PKGNAME%-*}" in
 		${jpkg})
-			job_msg_warn "ALLOW_NETWORKING_PACKAGES: Allowing full network access for ${COLOR_PORT}${port} | ${PKGNAME}${COLOR_RESET}"
-			msg_warn "ALLOW_NETWORKING_PACKAGES: Allowing full network access for ${COLOR_PORT}${port} | ${PKGNAME}${COLOR_RESET}"
+			job_msg_warn "ALLOW_NETWORKING_PACKAGES: Allowing full network access for ${COLOR_PORT}${port}${flavor:+@${flavor}} | ${PKGNAME}${COLOR_RESET}"
+			msg_warn "ALLOW_NETWORKING_PACKAGES: Allowing full network access for ${COLOR_PORT}${port}${flavor:+@${flavor}} | ${PKGNAME}${COLOR_RESET}"
 			allownetworking=1
 			JNETNAME="n"
 			break
@@ -2963,8 +2964,8 @@ _real_build_port() {
 		max_execution_time=${MAX_EXECUTION_TIME}
 		phaseenv=
 		JUSER=${jailuser}
-		bset_job_status "${phase}" "${port}"
-		job_msg_verbose "Status   ${COLOR_PORT}${port} | ${PKGNAME}${COLOR_RESET}: ${COLOR_PHASE}${phase}"
+		bset_job_status "${phase}" "${originspec}"
+		job_msg_verbose "Status   ${COLOR_PORT}${port}${flavor:+@${flavor}} | ${PKGNAME}${COLOR_RESET}: ${COLOR_PHASE}${phase}"
 		[ -n "${PORTTESTING}" ] && \
 		    phaseenv="${phaseenv} DEVELOPER_MODE=yes"
 		case ${phase} in
@@ -2993,7 +2994,8 @@ _real_build_port() {
 		run-depends)
 			JUSER=root
 			if [ -n "${PORTTESTING}" ]; then
-				check_fs_violation ${mnt} prebuild "${port}" \
+				check_fs_violation ${mnt} prebuild \
+				    "${originspec}" \
 				    "Checking for filesystem violations" \
 				    "Filesystem touched during build:" \
 				    "build_fs_violation" ||
@@ -3014,7 +3016,8 @@ _real_build_port() {
 		package)
 			max_execution_time=7200
 			if [ -n "${PORTTESTING}" ]; then
-				check_fs_violation ${mnt} prestage "${port}" \
+				check_fs_violation ${mnt} prestage \
+				    "${originspec}" \
 				    "Checking for staging violations" \
 				    "Filesystem touched during stage (files must install to \${STAGEDIR}):" \
 				    "stage_fs_violation" || if [ "${PORTTESTING_FATAL}" != "no" ]; then
@@ -3089,12 +3092,12 @@ _real_build_port() {
 				# 3 = cmd timeout
 				if [ $hangstatus -eq 2 ]; then
 					msg "Killing runaway build after ${NOHANG_TIME} seconds with no output"
-					bset_job_status "${phase}/runaway" "${port}"
-					job_msg_verbose "Status   ${COLOR_PORT}${port} | ${PKGNAME}${COLOR_RESET}: ${COLOR_PHASE}runaway"
+					bset_job_status "${phase}/runaway" "${originspec}"
+					job_msg_verbose "Status   ${COLOR_PORT}${port}${flavor:+@${flavor}} | ${PKGNAME}${COLOR_RESET}: ${COLOR_PHASE}runaway"
 				elif [ $hangstatus -eq 3 ]; then
 					msg "Killing timed out build after ${max_execution_time} seconds"
-					bset_job_status "${phase}/timeout" "${port}"
-					job_msg_verbose "Status   ${COLOR_PORT}${port} | ${PKGNAME}${COLOR_RESET}: ${COLOR_PHASE}timeout"
+					bset_job_status "${phase}/timeout" "${originspec}"
+					job_msg_verbose "Status   ${COLOR_PORT}${port}${flavor:+@${flavor}} | ${PKGNAME}${COLOR_RESET}: ${COLOR_PHASE}timeout"
 				fi
 				return 1
 			fi
@@ -3114,7 +3117,7 @@ _real_build_port() {
 		if [ "${phase}" = "stage" -a -n "${PORTTESTING}" ]; then
 			local die=0
 
-			bset_job_status "stage-qa" "${port}"
+			bset_job_status "stage-qa" "${originspec}"
 			if ! injail /usr/bin/env DEVELOPER=1 ${PORT_FLAGS} \
 			    /usr/bin/make -C ${portdir} ${MAKE_ARGS} \
 			    stage-qa; then
@@ -3124,7 +3127,7 @@ _real_build_port() {
 				die=1
 			fi
 
-			bset_job_status "check-plist" "${port}"
+			bset_job_status "check-plist" "${originspec}"
 			if ! injail /usr/bin/env DEVELOPER=1 ${PORT_FLAGS} \
 			    /usr/bin/make -C ${portdir} ${MAKE_ARGS} \
 			    check-plist; then
@@ -3150,7 +3153,7 @@ _real_build_port() {
 			local die=0
 
 			msg "Checking for extra files and directories"
-			bset_job_status "leftovers" "${port}"
+			bset_job_status "leftovers" "${originspec}"
 
 			if [ -f "${mnt}${PORTSDIR}/Mk/Scripts/check_leftovers.sh" ]; then
 				check_leftovers ${mnt} | sed -e "s|${mnt}||" |
@@ -3301,7 +3304,7 @@ Try testport with -n to use PREFIX=LOCALBASE"
 		done
 	fi
 
-	bset_job_status "build_port_done" "${port}"
+	bset_job_status "build_port_done" "${originspec}"
 	return ${testfailure}
 }
 
@@ -3315,13 +3318,14 @@ build_port() {
 
 # Save wrkdir and return path to file
 save_wrkdir() {
-	[ $# -ne 4 ] && eargs save_wrkdir mnt port portdir phase
+	[ $# -ne 5 ] && eargs save_wrkdir mnt originspec pkgname portdir phase
 	local mnt=$1
-	local port="$2"
-	local portdir="$3"
-	local phase="$4"
+	local originspec="$2"
+	local pkgname="$3"
+	local portdir="$4"
+	local phase="$5"
 	local tardir=${POUDRIERE_DATA}/wrkdirs/${MASTERNAME}/${PTNAME}
-	local tarname=${tardir}/${PKGNAME}.${WRKDIR_ARCHIVE_FORMAT}
+	local tarname=${tardir}/${pkgname}.${WRKDIR_ARCHIVE_FORMAT}
 	local mnted_portdir=${mnt}/wrkdirs/${portdir}
 
 	[ "${SAVE_WRKDIR}" != "no" ] || return 0
@@ -3341,7 +3345,7 @@ save_wrkdir() {
 	unlink ${tarname}
 	tar -s ",${mnted_portdir},," -c${COMPRESSKEY}f ${tarname} ${mnted_portdir}/work > /dev/null 2>&1
 
-	job_msg "Saved ${COLOR_PORT}${port} | ${PKGNAME}${COLOR_RESET} wrkdir to: ${tarname}"
+	job_msg "Saved ${COLOR_PORT}${originspec} | ${pkgname}${COLOR_RESET} wrkdir to: ${tarname}"
 }
 
 start_builder() {
@@ -3773,10 +3777,11 @@ crashed_build() {
 	[ $# -eq 2 ] || eargs crashed_build pkgname failed_phase
 	local pkgname="$1"
 	local failed_phase="$2"
-	local origin log
+	local origin originspec log
 
 	_log_path log
-	get_origin_from_pkgname origin "${pkgname}"
+	get_originspec_from_pkgname originspec "${pkgname}"
+	originspec_decode "${originspec}" origin '' ''
 
 	echo "Build crashed: ${failed_phase}" >> "${log}/logs/${pkgname}.log"
 
@@ -3787,36 +3792,38 @@ crashed_build() {
 		# Symlink the buildlog into errors/
 		ln -s "../${pkgname}.log" "${log}/logs/errors/${pkgname}.log"
 		badd ports.failed \
-		    "${origin} ${pkgname} ${failed_phase} ${failed_phase}"
+		    "${originspec} ${pkgname} ${failed_phase} ${failed_phase}"
 		COLOR_ARROW="${COLOR_FAIL}" msg \
-		    "${COLOR_FAIL}Finished ${COLOR_PORT}${origin} | ${pkgname}${COLOR_FAIL}: Failed: ${COLOR_PHASE}${failed_phase}"
+		    "${COLOR_FAIL}Finished ${COLOR_PORT}${originspec} | ${pkgname}${COLOR_FAIL}: Failed: ${COLOR_PHASE}${failed_phase}"
 		run_hook pkgbuild failed "${origin}" "${pkgname}" \
 		    "${failed_phase}" \
 		    "${log}/logs/errors/${pkgname}.log" >&3
 	fi
-	clean_pool "${pkgname}" "${origin}" "${failed_phase}"
-	stop_build "${pkgname}" "${origin}" 1 >> "${log}/logs/${pkgname}.log"
+	clean_pool "${pkgname}" "${originspec}" "${failed_phase}"
+	stop_build "${pkgname}" "${originspec}" 1 >> "${log}/logs/${pkgname}.log"
 }
 
 clean_pool() {
-	[ $# -ne 3 ] && eargs clean_pool pkgname origin clean_rdepends
+	[ $# -ne 3 ] && eargs clean_pool pkgname originspec clean_rdepends
 	local pkgname=$1
-	local port=$2
+	local originspec=$2
 	local clean_rdepends="$3"
-	local skipped_origin
+	local origin skipped_originspec skipped_origin
 
 	[ -n "${MY_JOBID}" ] && bset ${MY_JOBID} status "clean_pool:"
 
-	[ -z "${port}" -a -n "${clean_rdepends}" ] && \
-	    get_origin_from_pkgname port "${pkgname}"
+	[ -z "${originspec}" -a -n "${clean_rdepends}" ] && \
+	    get_originspec_from_pkgname originspec "${pkgname}"
+	originspec_decode "${originspec}" origin '' ''
 
 	# Cleaning queue (pool is cleaned here)
 	sh ${SCRIPTPREFIX}/clean.sh "${MASTERMNT}" "${pkgname}" "${clean_rdepends}" | sort -u | while read skipped_pkgname; do
-		get_origin_from_pkgname skipped_origin "${skipped_pkgname}"
-		badd ports.skipped "${skipped_origin} ${skipped_pkgname} ${pkgname}"
+		get_originspec_from_pkgname skipped_originspec "${skipped_pkgname}"
+		originspec_decode "${skipped_originspec}" skipped_origin '' ''
+		badd ports.skipped "${skipped_originspec} ${skipped_pkgname} ${pkgname}"
 		COLOR_ARROW="${COLOR_SKIP}" \
-		    job_msg "${COLOR_SKIP}Skipping ${COLOR_PORT}${skipped_origin} | ${skipped_pkgname}${COLOR_SKIP}: Dependent port ${COLOR_PORT}${port} | ${pkgname}${COLOR_SKIP} ${clean_rdepends}"
-		run_hook pkgbuild skipped "${skipped_origin}" "${skipped_pkgname}" "${port}" >&3
+		    job_msg "${COLOR_SKIP}Skipping ${COLOR_PORT}${skipped_originspec} | ${skipped_pkgname}${COLOR_SKIP}: Dependent port ${COLOR_PORT}${originspec} | ${pkgname}${COLOR_SKIP} ${clean_rdepends}"
+		run_hook pkgbuild skipped "${skipped_origin}" "${skipped_pkgname}" "${origin}" >&3
 	done
 
 	(
@@ -3866,7 +3873,7 @@ build_pkg() {
 
 	get_originspec_from_pkgname ORIGINSPEC "${pkgname}"
 	originspec_decode "${ORIGINSPEC}" port DEPENDS_ARGS FLAVOR
-	bset_job_status "starting" "${port}"
+	bset_job_status "starting" "${ORIGINSPEC}"
 	if [ -z "${FLAVOR}" ]; then
 		shash_get pkgname-flavor "${pkgname}" FLAVOR || FLAVOR=
 	fi
@@ -3921,7 +3928,7 @@ build_pkg() {
 
 	if [ -n "${ignore}" ]; then
 		msg "Ignoring ${port}: ${ignore}"
-		badd ports.ignored "${port} ${PKGNAME} ${ignore}"
+		badd ports.ignored "${ORIGINSPEC} ${PKGNAME} ${ignore}"
 		COLOR_ARROW="${COLOR_IGNORE}" job_msg "${COLOR_IGNORE}Finished ${COLOR_PORT}${port}${FLAVOR:+@${FLAVOR}} | ${PKGNAME}${COLOR_IGNORE}: Ignored: ${ignore}"
 		clean_rdepends="ignored"
 		run_hook pkgbuild ignored "${port}" "${PKGNAME}" "${ignore}" >&3
@@ -3939,16 +3946,18 @@ build_pkg() {
 				failed_phase=${failed_status%%:*}
 			fi
 
-			save_wrkdir ${mnt} "${port}" "${portdir}" "${failed_phase}" || :
+			save_wrkdir "${mnt}" "${ORIGINSPEC}" "${PKGNAME}" \
+			    "${portdir}" "${failed_phase}" || :
 		elif [ -f ${mnt}/${portdir}/.keep ]; then
-			save_wrkdir ${mnt} "${port}" "${portdir}" "noneed" ||:
+			save_wrkdir "${mnt}" "${ORIGINSPEC}" "${PKGNAME}" \
+			    "${portdir}" "noneed" ||:
 		fi
 
 		now=$(clock -monotonic)
 		elapsed=$((${now} - ${TIME_START_JOB}))
 
 		if [ ${build_failed} -eq 0 ]; then
-			badd ports.built "${port} ${PKGNAME} ${elapsed}"
+			badd ports.built "${ORIGINSPEC} ${PKGNAME} ${elapsed}"
 			COLOR_ARROW="${COLOR_SUCCESS}" job_msg "${COLOR_SUCCESS}Finished ${COLOR_PORT}${port}${FLAVOR:+@${FLAVOR}} | ${PKGNAME}${COLOR_SUCCESS}: Success"
 			run_hook pkgbuild success "${port}" "${PKGNAME}" >&3
 			# Cache information for next run
@@ -3959,7 +3968,7 @@ build_pkg() {
 			errortype=$(/bin/sh ${SCRIPTPREFIX}/processonelog.sh \
 				${log}/logs/errors/${PKGNAME}.log \
 				2> /dev/null)
-			badd ports.failed "${port} ${PKGNAME} ${failed_phase} ${errortype} ${elapsed}"
+			badd ports.failed "${ORIGINSPEC} ${PKGNAME} ${failed_phase} ${errortype} ${elapsed}"
 			COLOR_ARROW="${COLOR_FAIL}" job_msg "${COLOR_FAIL}Finished ${COLOR_PORT}${port}${FLAVOR:+@${FLAVOR}} | ${PKGNAME}${COLOR_FAIL}: Failed: ${COLOR_PHASE}${failed_phase}"
 			run_hook pkgbuild failed "${port}" "${PKGNAME}" "${failed_phase}" \
 				"${log}/logs/errors/${PKGNAME}.log" >&3
@@ -3977,9 +3986,9 @@ build_pkg() {
 		rm -rf ${mnt}/wrkdirs/* || :
 	fi
 
-	clean_pool ${PKGNAME} ${port} "${clean_rdepends}"
+	clean_pool "${PKGNAME}" "${ORIGINSPEC}" "${clean_rdepends}"
 
-	stop_build "${PKGNAME}" ${port} ${build_failed}
+	stop_build "${PKGNAME}" "${ORIGINSPEC}" ${build_failed}
 
 	log_stop
 
@@ -3989,9 +3998,9 @@ build_pkg() {
 }
 
 stop_build() {
-	[ $# -eq 3 ] || eargs stop_build pkgname origin build_failed
+	[ $# -eq 3 ] || eargs stop_build pkgname originspec build_failed
 	local pkgname="$1"
-	local origin="$2"
+	local originspec="$2"
 	local build_failed="$3"
 	local mnt
 
@@ -4019,7 +4028,7 @@ stop_build() {
 		fi
 	fi
 
-	buildlog_stop "${pkgname}" ${origin} ${build_failed}
+	buildlog_stop "${pkgname}" "${originspec}" ${build_failed}
 }
 
 prefix_stderr_quick() {
@@ -5771,10 +5780,10 @@ gather_port_vars_process_depqueue() {
 		if [ ${ALL} -eq 0 ] && [ -z "${dep_args}" ]; then
 			if [ -n "${dep_flavor}" ]; then
 				queue=fqueue
-				rdep="metadata ${dep_flavor} ${origin}"
+				rdep="metadata ${dep_flavor} ${originspec}"
 			else
 				queue=gqueue
-				rdep="${origin}"
+				rdep="${originspec}"
 			fi
 
 			msg_debug "Want to enqueue default ${dep_origin} rdep=${rdep} into ${queue}"
@@ -5796,7 +5805,7 @@ gather_port_vars_process_depqueue() {
 			msg_debug "Want to enqueue ${dep_originspec} rdep=${origin} into ${queue}"
 			gather_port_vars_process_depqueue_enqueue \
 			    "${originspec}" "${dep_originspec}" "${queue}" \
-			    "${origin}"
+			    "${originspec}"
 		fi
 	done
 }

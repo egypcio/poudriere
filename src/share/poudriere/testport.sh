@@ -52,7 +52,6 @@ Options:
                    of dependencies completed
     -p tree     -- Specify the path to the portstree
     -P          -- Use custom prefix
-    -s          -- Skip incremental rebuild and sanity checks
     -S          -- Don't recursively rebuild packages affected by other
                    packages requiring incremental rebuild. This can result
                    in broken packages if the ones updated do not retain
@@ -168,7 +167,12 @@ new_origin=$(grep -v '^#' ${portsdir}/MOVED | awk -vorigin="${ORIGIN}" \
     -F\| '$1 == origin && $2 != "" {print $2}')
 if [ -n "${new_origin}" ]; then
 	msg "MOVED: ${COLOR_PORT}${ORIGIN}${COLOR_RESET} moved to ${COLOR_PORT}${new_origin}${COLOR_RESET}"
-	ORIGIN="${new_origin}"
+	# The ORIGIN may have a FLAVOR in it which overrides whatever the
+	# user specified.
+	originspec_decode "${new_origin}" ORIGIN '' NEW_FLAVOR
+	if [ -n "${NEW_FLAVOR}" ]; then
+		FLAVOR="${NEW_FLAVOR}"
+	fi
 	# Update ORIGINSPEC for the new ORIGIN
 	originspec_encode ORIGINSPEC "${ORIGIN}" "${DEPENDS_ARGS}" "${FLAVOR}"
 fi

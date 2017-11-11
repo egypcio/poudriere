@@ -64,6 +64,9 @@ not_for_os() {
 }
 
 err() {
+	if [ -n "${IGNORE_ERR}" ]; then
+		return 0
+	fi
 	trap '' SIGINFO
 	export CRASHED=1
 	if [ $# -ne 2 ]; then
@@ -755,7 +758,7 @@ buildlog_start() {
 	echo "port directory: ${portdir}"
 	echo "package name: ${PKGNAME}"
 	echo "building for: $(injail uname -a)"
-	echo "maintained by: ${_maintainer}"
+	echo "maintained by: ${mk_MAINTAINER}"
 	echo "Makefile ident: $(ident -q ${mnt}/${portdir}/Makefile|sed -n '2,2p')"
 	echo "Poudriere version: ${POUDRIERE_VERSION}"
 	echo "Host OSVERSION: ${HOST_OSVERSION}"
@@ -3880,6 +3883,9 @@ build_pkg() {
 	job_msg "Building ${COLOR_PORT}${port}${FLAVOR:+@${FLAVOR}} | ${PKGNAME}${COLOR_RESET}"
 
 	MAKE_ARGS="${DEPENDS_ARGS}${FLAVOR:+ FLAVOR=${FLAVOR}}"
+	if [ -n "${DEPENDS_ARGS}" ]; then
+		PKGENV="${PKGENV:+${PKGENV} }PKG_NOTES=depends_args PKG_NOTE_depends_args=${DEPENDS_ARGS}"
+	fi
 	portdir="${PORTSDIR}/${port}"
 
 	if [ -n "${MAX_MEMORY_BYTES}" -o -n "${MAX_FILES}" ]; then
@@ -4172,8 +4178,8 @@ originspec_encode() {
 	# Only add in FLAVOR and DEPENDS_ARGS if they are needed,
 	# if neither are then don't even add in the ORIGINSPEC_SEP.
 	if [ -n "${_dep_args}" -o -n "${_flavor}" ]; then
-		[ -n "${dep_args}" -a -n "${_flavor}" ] && \
-		    err 1 "originspec_encode: Origin ${origin} incorrectly trying to use FLAVOR=${_flavor} and DEPENDS_ARGS=${dep_args}"
+		[ -n "${_dep_args}" -a -n "${_flavor}" ] && \
+		    err 1 "originspec_encode: Origin ${origin} incorrectly trying to use FLAVOR=${_flavor} and DEPENDS_ARGS=${_dep_args}"
 		output="${output}${ORIGINSPEC_SEP}${_flavor}${_dep_args:+${ORIGINSPEC_SEP}${_dep_args}}"
 	fi
 	setvar "${_var_return}" "${output}"
@@ -4559,6 +4565,33 @@ pkg_get_flavor() {
 	setvar "${var_return}" "${_flavor}"
 }
 
+pkg_get_dep_args() {
+	[ $# -eq 2 ] || eargs pkg_get_dep_args var_return pkg
+	local var_return="$1"
+	local pkg="$2"
+	local pkg_cache_dir
+	local _dep_args cachefile
+
+	get_pkg_cache_dir pkg_cache_dir "${pkg}"
+	cachefile="${pkg_cache_dir}/dep_args"
+
+	if [ ! -f "${cachefile}" ]; then
+		if [ -z "${_dep_args}" ]; then
+			if [ "${PKG_EXT}" != "tbz" ]; then
+				_dep_args=$(injail ${PKG_BIN} query -F \
+					"/packages/All/${pkg##*/}" \
+					'%At %Av' | \
+					awk '$1 == "depends_args" {print $2}')
+			fi
+		fi
+		echo ${_dep_args} > "${cachefile}"
+	else
+		read_line _dep_args "${cachefile}"
+	fi
+
+	setvar "${var_return}" "${_dep_args}"
+}
+
 pkg_get_dep_origin_pkgbase() {
 	[ $# -ne 3 ] && eargs pkg_get_dep_origin_pkgbase var_return_origin \
 	    var_return_pkgbase pkg
@@ -4666,7 +4699,11 @@ pkg_cache_data() {
 	ensure_pkg_installed || return 1
 	pkg_get_options _ignored "${pkg}" > /dev/null
 	pkg_get_origin _ignored "${pkg}" "${origin}" > /dev/null
-	pkg_get_flavor _ignored "${pkg}" > /dev/null
+	if have_ports_feature FLAVORS; then
+		pkg_get_flavor _ignored "${pkg}" > /dev/null
+	elif have_ports_feature DEPENDS_ARGS; then
+		pkg_get_dep_args _ignored "${pkg}" > /dev/null
+	fi
 	pkg_get_dep_origin_pkgbase _ignored _ignored "${pkg}" > /dev/null
 	deps_file _ignored "${pkg}" > /dev/null
 }
@@ -4800,15 +4837,66 @@ delete_old_pkg() {
 	local mnt pkgname new_pkgname
 	local origin v v2 compiled_options current_options current_deps
 	local td d key dpath dir found raw_deps compiled_deps
-	local compiled_deps_pkgbases
-	local pkgbase new_pkgbase _pkgnames flavor pkg_flavor
+	local pkg_origin compiled_deps_pkgbases
+	local pkgbase new_pkgbase flavor pkg_flavor originspec
 	local dep_pkgname dep_pkgbase dep_origin dep_flavor dep_dep_args
+	local stale_pkg dep_args pkg_dep_args
 
 	pkgname="${pkg##*/}"
 	pkgname="${pkgname%.*}"
-	pkgbase_is_needed "${pkgname}" || return 0
 
-	pkg_get_origin origin "${pkg}"
+	# Some expensive lookups are delayed until the last possible
+	# moment as cheaper checks may weed out this package before.
+
+	pkg_flavor="__null"
+	pkg_dep_args="__null"
+	origin="__null"
+	originspec=
+	if ! pkgbase_is_needed "${pkgname}"; then
+		# We don't expect this PKGBASE but it may still be an
+		# origin that is expected and just renamed.  Need to
+		# get the origin and flavor out of the package to
+		# determine that.
+		pkg_get_origin origin "${pkg}"
+		# pkg_get_origin may have returned a FLAVOR from MOVED.
+		originspec_decode "${origin}" pkg_origin '' pkg_flavor
+		if [ -n "${pkg_flavor}" ]; then
+			# Assume this is the flavor to use now.  Trim
+			# FLAVOR from origin.
+			origin="${pkg_origin}"
+			pkg_dep_args=
+			# XXX: What if the package already had a FLAVOR? (#541)
+		else
+			pkg_flavor=
+			pkg_dep_args=
+			if have_ports_feature FLAVORS; then
+				pkg_get_flavor pkg_flavor "${pkg}"
+			elif have_ports_feature DEPENDS_ARGS; then
+				pkg_get_dep_args pkg_dep_args "${pkg}"
+			fi
+		fi
+		originspec_encode originspec "${origin}" "${pkg_dep_args}" \
+		    "${pkg_flavor}"
+		if ! originspec_is_needed "${originspec}"; then
+			msg_debug "delete_old_pkg: Skip unqueued ${pkg} ${origin} ${pkg_flavor}${pkg_dep_args} ${originspec}"
+			return 0
+		fi
+		# Apparently we expect this package via its origin and flavor.
+	fi
+	if [ "${origin}" = "__null" ]; then
+		pkg_get_origin origin "${pkg}"
+		# pkg_get_origin may have returned a FLAVOR from MOVED.
+		originspec_decode "${origin}" pkg_origin '' pkg_flavor
+		if [ -n "${pkg_flavor}" ]; then
+			# Assume this is the flavor to use now.  Trim
+			# FLAVOR from origin and fixup originspec.
+			originspec="${origin}"
+			origin="${pkg_origin}"
+			pkg_dep_args=
+			# XXX: What if the package already had a FLAVOR? (#541)
+		fi
+	fi
+
 	_my_path mnt
 
 	if [ ! -d "${mnt}${PORTSDIR}/${origin}" ]; then
@@ -4817,30 +4905,53 @@ delete_old_pkg() {
 		return 0
 	fi
 
+	if [ -z "${originspec}" ]; then
+		pkg_flavor=
+		pkg_dep_args=
+		if have_ports_feature FLAVORS; then
+			pkg_get_flavor pkg_flavor "${pkg}"
+		elif have_ports_feature DEPENDS_ARGS; then
+			pkg_get_dep_args pkg_dep_args "${pkg}"
+		fi
+		originspec_encode originspec "${origin}" "${pkg_dep_args}" \
+		    "${pkg_flavor}"
+	fi
+
 	v="${pkgname##*-}"
 	# Check if any packages were queried for this origin to map it to a
 	# new pkgname/version.
-	if ! _all_pkgnames_for_origin "${origin}" _pkgnames; then
+	stale_pkg=0
+	if have_ports_feature FLAVORS && \
+	    ! get_pkgname_from_originspec "${originspec}" new_pkgname; then
+		stale_pkg=1
+	elif have_ports_feature DEPENDS_ARGS; then
+		map_py_slave_port "${originspec}" originspec || :
+		if ! shash_get originspec-pkgname "${originspec}" \
+		    new_pkgname; then
+			stale_pkg=1
+		fi
+	fi
+	if [ ${stale_pkg} -eq 1 ]; then
 		# This origin was not looked up in gather_port_vars.  It is
 		# a stale package with the same PKGBASE as one we want, but
 		# with a different origin.  Such as lang/perl5.20 vs
 		# lang/perl5.22 both with 'perl5' as PKGBASE.  A pkgclean
 		# would handle removing this.
-		msg "Deleting ${pkg##*/}: stale package: unwanted origin ${origin}"
+		msg "Deleting ${pkg##*/}: stale package: unwanted origin ${originspec}"
 		delete_pkg "${pkg}"
 		return 0
 	fi
-	# The previous _pkgnames lookup may have returned multiple
-	# packages built from this origin.  Find the closest matching
-	# to our old pkgbase.
 	pkgbase="${pkgname%-*}"
-	for new_pkgname in ${_pkgnames}; do
-		new_pkgbase="${new_pkgname%-*}"
-		[ "${pkgbase}" = "${new_pkgbase}" ] && break
-	done
+	new_pkgbase="${new_pkgname%-*}"
 
-	# A 'changed PKGNAME' check is done later for the case of
-	# not finding a relevant pkgbase match.
+	# Check for changed PKGNAME before version as otherwise a new
+	# version may show for a stale package that has been renamed.
+	# XXX: Check if the pkgname has changed and rename in the repo
+	if [ "${pkgbase}" != "${new_pkgbase}" ]; then
+		msg "Deleting ${pkg##*/}: package name changed to '${new_pkgbase}'"
+		delete_pkg "${pkg}"
+		return 0
+	fi
 
 	v2=${new_pkgname##*-}
 	if [ "$v" != "$v2" ]; then
@@ -4941,7 +5052,7 @@ delete_old_pkg() {
 			*\ ${d}\ *) ;;
 			*)
 				# Unknown, but if this origin has a FLAVOR or
-				# DEPENDS_ARGS then we needa to fallback to a
+				# DEPENDS_ARGS then we need to fallback to a
 				# PKGBASE comparison first.
 				originspec_decode "${d}" dep_origin \
 				    dep_dep_args dep_flavor
@@ -5000,16 +5111,8 @@ delete_old_pkg() {
 		fi
 	fi
 
-	# XXX: Check if the pkgname has changed and rename in the repo
-	if [ "${pkgbase}" != "${new_pkgbase}" ]; then
-		msg "Deleting ${pkg##*/}: package name changed to '${new_pkgbase}'"
-		delete_pkg "${pkg}"
-		return 0
-	fi
-
 	if have_ports_feature FLAVORS; then
 		shash_get pkgname-flavor "${pkgname}" flavor || flavor=
-		pkg_get_flavor pkg_flavor "${pkg}"
 		if [ "${pkg_flavor}" != "${flavor}" ]; then
 			msg "Deleting ${pkg##*/}: FLAVOR changed to '${flavor}' from '${pkg_flavor}'"
 			delete_pkg "${pkg}"
@@ -6090,24 +6193,6 @@ _listed_ports() {
 	done
 }
 
-_all_pkgnames_for_origin() {
-	[ "${PWD}" = "${MASTERMNT}/.p" ] || \
-	    err 1 "_all_pkgnames_for_origin requires PWD=${MASTERMNT}/.p"
-	[ $# -eq 2 ] || eargs _all_pkgnames_for_origin origin var_return_pkgnames
-	local origin="${1}"
-	local var_return_pkgnames="${2}"
-	local originspec results
-
-	originspec_encode originspec "${origin}" \
-	    "?[^${ORIGINSPEC_SEP}]*" \
-	    "?[^${ORIGINSPEC_SEP}]*"
-	_gsub "${originspec}" '+' '\\+'
-	results=$(awk -voriginspec="${_gsub}" '
-	    $2 ~ originspec { print $1 }' "all_pkgs")
-	setvar "${var_return_pkgnames}" "${results}"
-	[ -n "${results}" ]
-}
-
 listed_pkgnames() {
 	awk '$3 == "listed" { print $1 }' "${MASTERMNT}/.p/all_pkgs"
 }
@@ -6172,6 +6257,26 @@ pkgbase_is_needed() {
 		if (found != 1)
 			exit 1
 	    }' "all_pkgbases"
+}
+
+# Port was requested to be built, or is needed by a port requested to be built
+originspec_is_needed() {
+       [ "${PWD}" = "${MASTERMNT}/.p" ] || \
+           err 1 "originspec_is_needed requires PWD=${MASTERMNT}/.p"
+       [ $# -eq 1 ] || eargs originspec_is_needed originspec
+       local originspec="$1"
+
+       [ ${ALL} -eq 1 ] && return 0
+
+       awk -voriginspec="${originspec}" '
+           $2 == originspec {
+               found=1
+               exit 0
+           }
+           END {
+               if (found != 1)
+                       exit 1
+           }' "all_pkgs"
 }
 
 get_porttesting() {

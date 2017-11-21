@@ -764,8 +764,6 @@ install_from_tar() {
 create_jail() {
 	[ "${JAILNAME#*.*}" = "${JAILNAME}" ] ||
 		err 1 "The jailname cannot contain a period (.). See jail(8)"
-	[ "${JAILNAME#*:*}" = "${JAILNAME}" ] ||
-		err 1 "The jailname cannot contain a colon (:)."
 
 	if [ "${METHOD}" = "null" ]; then
 		[ -z "${JAILMNT}" ] && \
@@ -776,8 +774,13 @@ create_jail() {
 
 	if [ -z ${JAILMNT} ]; then
 		[ -z ${BASEFS} ] && err 1 "Please provide a BASEFS variable in your poudriere.conf"
-		JAILMNT=${BASEFS}/jails/${JAILNAME}
+		JAILMNT="${BASEFS}/jails/${JAILNAME}"
+		_gsub "${JAILMNT}" ":" "_"
+		JAILMNT="${_gsub}"
 	fi
+
+	[ "${JAILMNT#*:*}" = "${JAILMNT}" ] ||
+		err 1 "The jail mount path cannot contain a colon (:)"
 
 	if [ -z "${JAILFS}" -a -z "${NO_ZFS}" ]; then
 		[ -z ${ZPOOL} ] && err 1 "Please provide a ZPOOL variable in your poudriere.conf"

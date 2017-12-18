@@ -27,7 +27,7 @@
 .\"
 .\" Note: The date here should be updated whenever a non-trivial
 .\" change is made to the manual page.
-.Dd November 8, 2017
+.Dd December 13, 2017
 .Dt POUDRIERE 8
 .Os
 .Sh NAME
@@ -134,6 +134,10 @@ arguments may be specified at once.
 .It cat/port cat/port2 ...
 A list of ports can be specified directly.
 .El
+.Pp
+See
+.Sx FLAVORS
+for supported FLAVORS syntax.
 .Pp
 See
 .Sx CUSTOMISATION
@@ -495,7 +499,9 @@ Use the specified
 .Ar srcpath
 as the
 .Fx
-source tree mounted inside the jail.
+source tree mounted inside the jail
+or from the host for
+.Fl m Ar null .
 .It Fl t Ar version
 instead of upgrading to the latest security fix of the jail version, you can
 jump to the new specified
@@ -620,8 +626,11 @@ All missing dependencies will first be built in parallel.
 is automatically defined in the environment to test ports marked as
 .Ev BROKEN .
 .Bl -tag -width "-f conffile"
-.It Fl Oo o Oc Ar origin
-Specifies an origin in the ports tree
+.It Oo Fl o Oc Ar origin
+Specifies an origin in the ports tree.
+See
+.Sx FLAVORS
+for supported FLAVORS syntax.
 .El
 .Pp
 Here are the options associated with the
@@ -677,10 +686,14 @@ The default pre-build value is 1.25 times the value of the build value.
 .It Fl k
 Do not consider failures as fatal.
 Find all failures.
-.It Fl P
-Use custom prefix.
+.It Fl n
+Dry run.
+Show what would be done, but do not actually build or delete any
+packages.
 .It Fl N
 Do not build package repository or INDEX when build of dependencies is completed.
+.It Fl P
+Use custom prefix.
 .It Fl p Ar tree
 Specifies which ports
 .Ar tree
@@ -1084,6 +1097,66 @@ propose the line to add to pkg-plist if needed.
 .Pp
 It is very easy to extend it so that we can easily add other tests if
 wanted.
+.Sh FLAVORS
+.Cm bulk -a
+will build all FLAVORS for each port.
+Otherwise
+.Cm bulk
+and
+.Cm testport
+use the following rules:
+.Bl -bullet -compact
+.It
+A FLAVOR of
+.Sy bar
+for port
+.Pa devel/foo
+is specified as
+.Sy devel/foo@bar .
+.El
+.Pp
+If
+.Va FLAVOR_DEFAULT_ALL
+is not set, or is set to
+.Sy no
+(the default), in
+.Pa poudriere.conf,
+then:
+.Bl -bullet -compact
+.It
+All FLAVORS for a port, without a specified FLAVOR, will be built
+using the FLAVOR
+.Sy all :
+.Sy devel/foo@all .
+.It
+The first (default) FLAVOR for a port is built by not specifying a FLAVOR:
+.Sy devel/foo .
+.El
+.Pp
+If
+.Va FLAVOR_DEFAULT_ALL
+is set to
+.Sy yes
+in
+.Pa poudriere.conf,
+then:
+.Bl -bullet -compact
+.It
+All FLAVORS for a port, without a specified FLAVOR, will be built:
+.Sy devel/foo .
+.It
+The first (default) FLAVOR for a port is built by specifying the FLAVOR
+.Sy - :
+.Sy devel/foo@-
+.El
+.Pp
+.Ss KNOWN ISSUES
+.Bl -bullet -compat
+.It
+An invalid FLAVOR for a port will cause an error during dependency calculation.
+.It
+MOVED entries do not support a source FLAVOR, only a target one.
+.El
 .Sh CUSTOMISATION
 For bulk building, you can customize binary packages produced by
 .Nm

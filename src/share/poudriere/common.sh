@@ -105,15 +105,18 @@ _msg_n() {
 	local -; set +x
 	local now elapsed
 	local NL="${1}"
-	local arrow
+	local arrow DRY_MODE
 	shift 1
 
-	elapsed=
-	if should_show_elapsed; then
+	if [ "${MSG_NESTED:-0}" -eq 1 ]; then
+		unset elapsed arrow DRY_MODE
+	elif should_show_elapsed; then
 		now=$(clock -monotonic)
 		calculate_duration elapsed "$((${now} - ${TIME_START:-0}))"
 		elapsed="[${elapsed}] "
+		unset arrow
 	else
+		unset elapsed
 		arrow="=>>"
 	fi
 	if [ -n "${COLOR_ARROW}" ] || [ -z "${1##*\033[*}" ]; then
@@ -253,6 +256,7 @@ _mastermnt() {
 
 	mnamelen=$(grep "#define[[:space:]]MNAMELEN" \
 	    /usr/include/sys/mount.h 2>/dev/null | awk '{print $3}')
+	: ${mnamelen:=88}
 
 	mnt="${POUDRIERE_DATA}/.m/${MASTERNAME}/ref"
 	if [ -z "${NOLINUX}" ]; then
@@ -262,8 +266,7 @@ _mastermnt() {
 	fi
 	mnttest="${mnt}${testpath}"
 
-	if [ -n "${FORCE_MOUNT_HASH}" ] || \
-	    [ -n "${mnamelen}" ] && \
+	if [ "${FORCE_MOUNT_HASH}" = "yes" ] || \
 	    [ ${#mnttest} -ge $((${mnamelen} - 1)) ]; then
 		hashed_name=$(sha256 -qs "${MASTERNAME}" | \
 		    awk '{print substr($0, 0, 6)}')
@@ -501,7 +504,7 @@ do_confirm_delete() {
 }
 
 injail() {
-	if [ ${STATUS:-0} -eq 0 ]; then
+	if [ ${INJAIL_HOST:-0} -eq 1 ]; then
 		# For test/
 		"$@"
 	elif [ "${USE_JEXECD}" = "no" ]; then
@@ -588,6 +591,7 @@ jkill_wait() {
 # Kill everything in the jail and ensure it is free of any processes
 # before returning.
 jkill() {
+	[ "${USE_JEXECD}" = "yes" ] && return 0
 	jkill_wait
 	JNETNAME="n" jkill_wait
 }
@@ -1162,6 +1166,41 @@ show_log_info() {
 	build_url build_url && \
 	    msg "WWW: ${build_url}"
 	return 0
+}
+
+show_dry_run_summary() {
+	[ ${DRY_RUN} -eq 1 ] || return 0
+	local log
+
+	_log_path log
+
+	bset status "done:"
+	msg "Dry run mode, cleaning up and exiting"
+	tobuild=$(calculate_tobuild)
+	if [ ${tobuild} -gt 0 ]; then
+		[ ${PARALLEL_JOBS} -gt ${tobuild} ] &&
+		    PARALLEL_JOBS=${tobuild##* }
+		msg "Would build ${tobuild} packages using ${PARALLEL_JOBS} builders"
+
+		msg_n "Ports to build: "
+		{
+			if was_a_testport_run; then
+				echo "${ORIGINSPEC}"
+			fi
+			cat "${log}/.poudriere.ports.queued"
+		} | \
+		    while read originspec pkgname _ignored; do
+			# Trim away DEPENDS_ARGS for display
+			originspec_decode "${originspec}" origin '' flavor
+			originspec_encode originspec "${origin}" '' "${flavor}"
+			echo "${originspec}"
+		done | sort | tr '\n' ' '
+		echo
+	else
+		msg "No packages would be built"
+	fi
+	show_log_info
+	exit 0
 }
 
 show_build_summary() {
@@ -3301,8 +3340,7 @@ _real_build_port() {
 			[ ${die} -eq 1 -a "${PREFIX}" != "${LOCALBASE}" ] && \
 			    was_a_testport_run && msg \
 			    "This test was done with PREFIX!=LOCALBASE which \
-may show failures if the port does not respect PREFIX. \
-Try testport with -n to use PREFIX=LOCALBASE"
+may show failures if the port does not respect PREFIX."
 			rm -f ${add} ${add1} ${del} ${del1} ${mod} ${mod1}
 			[ $die -eq 0 ] || if [ "${PORTTESTING_FATAL}" != "no" ]; then
 				return 1
@@ -3909,10 +3947,8 @@ build_pkg() {
 		JEXEC_LIMITS=1
 	fi
 
-	if [ "${USE_JEXECD}" = "no" ]; then
-		# Kill everything in jail first
-		jkill
-	fi
+	# Kill everything in jail first
+	jkill
 
 	if [ ${TMPFS_LOCALBASE} -eq 1 -o ${TMPFS_ALL} -eq 1 ]; then
 		if [ -f "${mnt}/${LOCALBASE:-/usr/local}/.mounted" ]; then
@@ -4045,10 +4081,8 @@ stop_build() {
 			JNETNAME="n" injail ps auxwwd | egrep -v '(ps auxwwd|jexecd)'
 		fi
 
-		if [ "${USE_JEXECD}" = "no" ]; then
-			# Always kill to avoid missing anything
-			jkill
-		fi
+		# Always kill to avoid missing anything
+		jkill
 	fi
 
 	buildlog_stop "${pkgname}" "${originspec}" ${build_failed}
@@ -4057,10 +4091,14 @@ stop_build() {
 prefix_stderr_quick() {
 	local -; set +x
 	local extra="$1"
+	local MSG_NESTED
 	shift 1
 
 	{
-		{ "$@"; } 2>&1 1>&3 | {
+		{
+			MSG_NESTED=1
+			"$@"
+		} 2>&1 1>&3 | {
 			setproctitle "${PROC_TITLE} (prefix_stderr_quick)"
 			while read -r line; do
 				msg_warn "${extra}: ${line}"
@@ -4073,6 +4111,7 @@ prefix_stderr() {
 	local extra="$1"
 	shift 1
 	local prefixpipe prefixpid ret
+	local MSG_NESTED
 
 	prefixpipe=$(mktemp -ut prefix_stderr.pipe)
 	mkfifo "${prefixpipe}"
@@ -4088,6 +4127,7 @@ prefix_stderr() {
 	exec 2> "${prefixpipe}"
 	unlink "${prefixpipe}"
 
+	MSG_NESTED=1
 	ret=0
 	"$@" || ret=$?
 
@@ -4101,6 +4141,7 @@ prefix_stdout() {
 	local extra="$1"
 	shift 1
 	local prefixpipe prefixpid ret
+	local MSG_NESTED
 
 	prefixpipe=$(mktemp -ut prefix_stdout.pipe)
 	mkfifo "${prefixpipe}"
@@ -4116,6 +4157,7 @@ prefix_stdout() {
 	exec > "${prefixpipe}"
 	unlink "${prefixpipe}"
 
+	MSG_NESTED=1
 	ret=0
 	"$@" || ret=$?
 
@@ -4533,7 +4575,6 @@ pkg_get_origin() {
 	local _origin=$3
 	local pkg_cache_dir
 	local originfile
-	local new_origin
 
 	get_pkg_cache_dir pkg_cache_dir "${pkg}"
 	originfile="${pkg_cache_dir}/origin"
@@ -4548,7 +4589,6 @@ pkg_get_origin() {
 		read_line _origin "${originfile}"
 	fi
 
-	check_moved new_origin "${_origin}" && _origin=${new_origin}
 
 	setvar "${var_return}" "${_origin}"
 
@@ -4857,7 +4897,7 @@ delete_old_pkg() {
 	local pkg_origin compiled_deps_pkgbases
 	local pkgbase new_pkgbase flavor pkg_flavor originspec
 	local dep_pkgname dep_pkgbase dep_origin dep_flavor dep_dep_args
-	local stale_pkg dep_args pkg_dep_args
+	local new_origin stale_pkg dep_args pkg_dep_args
 
 	pkgname="${pkg##*/}"
 	pkgname="${pkgname%.*}"
@@ -4865,32 +4905,19 @@ delete_old_pkg() {
 	# Some expensive lookups are delayed until the last possible
 	# moment as cheaper checks may weed out this package before.
 
-	pkg_flavor="__null"
-	pkg_dep_args="__null"
-	origin="__null"
+	pkg_flavor=
+	pkg_dep_args=
 	originspec=
+	pkg_get_origin origin "${pkg}"
 	if ! pkgbase_is_needed "${pkgname}"; then
 		# We don't expect this PKGBASE but it may still be an
 		# origin that is expected and just renamed.  Need to
 		# get the origin and flavor out of the package to
 		# determine that.
-		pkg_get_origin origin "${pkg}"
-		# pkg_get_origin may have returned a FLAVOR from MOVED.
-		originspec_decode "${origin}" pkg_origin '' pkg_flavor
-		if [ -n "${pkg_flavor}" ]; then
-			# Assume this is the flavor to use now.  Trim
-			# FLAVOR from origin.
-			origin="${pkg_origin}"
-			pkg_dep_args=
-			# XXX: What if the package already had a FLAVOR? (#541)
-		else
-			pkg_flavor=
-			pkg_dep_args=
-			if have_ports_feature FLAVORS; then
-				pkg_get_flavor pkg_flavor "${pkg}"
-			elif have_ports_feature DEPENDS_ARGS; then
-				pkg_get_dep_args pkg_dep_args "${pkg}"
-			fi
+		if have_ports_feature FLAVORS; then
+			pkg_get_flavor pkg_flavor "${pkg}"
+		elif have_ports_feature DEPENDS_ARGS; then
+			pkg_get_dep_args pkg_dep_args "${pkg}"
 		fi
 		originspec_encode originspec "${origin}" "${pkg_dep_args}" \
 		    "${pkg_flavor}"
@@ -4900,31 +4927,22 @@ delete_old_pkg() {
 		fi
 		# Apparently we expect this package via its origin and flavor.
 	fi
-	if [ "${origin}" = "__null" ]; then
-		pkg_get_origin origin "${pkg}"
-		# pkg_get_origin may have returned a FLAVOR from MOVED.
-		originspec_decode "${origin}" pkg_origin '' pkg_flavor
-		if [ -n "${pkg_flavor}" ]; then
-			# Assume this is the flavor to use now.  Trim
-			# FLAVOR from origin and fixup originspec.
-			originspec="${origin}"
-			origin="${pkg_origin}"
-			pkg_dep_args=
-			# XXX: What if the package already had a FLAVOR? (#541)
-		fi
+
+	if check_moved new_origin "${origin}"; then
+		msg "Deleting ${pkg##*/}: ${origin} moved to ${new_origin}"
+		delete_pkg "${pkg}"
+		return 0
 	fi
 
 	_my_path mnt
 
 	if [ ! -d "${mnt}${PORTSDIR}/${origin}" ]; then
-		msg "${origin} does not exist anymore. Deleting stale ${pkg##*/}"
+		msg "Deleting ${pkg##*/}: stale package: nonexistent origin ${origin}"
 		delete_pkg "${pkg}"
 		return 0
 	fi
 
 	if [ -z "${originspec}" ]; then
-		pkg_flavor=
-		pkg_dep_args=
 		if have_ports_feature FLAVORS; then
 			pkg_get_flavor pkg_flavor "${pkg}"
 		elif have_ports_feature DEPENDS_ARGS; then
@@ -4975,6 +4993,15 @@ delete_old_pkg() {
 		msg "Deleting ${pkg##*/}: new version: ${v2}"
 		delete_pkg "${pkg}"
 		return 0
+	fi
+
+	if have_ports_feature FLAVORS; then
+		shash_get pkgname-flavor "${pkgname}" flavor || flavor=
+		if [ "${pkg_flavor}" != "${flavor}" ]; then
+			msg "Deleting ${pkg##*/}: FLAVOR changed to '${flavor}' from '${pkg_flavor}'"
+			delete_pkg "${pkg}"
+			return 0
+		fi
 	fi
 
 	# Detect ports that have new dependencies that the existing packages
@@ -5123,15 +5150,6 @@ delete_old_pkg() {
 				msg "Pkg: ${compiled_options}"
 				msg "New: ${current_options}"
 			fi
-			delete_pkg "${pkg}"
-			return 0
-		fi
-	fi
-
-	if have_ports_feature FLAVORS; then
-		shash_get pkgname-flavor "${pkgname}" flavor || flavor=
-		if [ "${pkg_flavor}" != "${flavor}" ]; then
-			msg "Deleting ${pkg##*/}: FLAVOR changed to '${flavor}' from '${pkg_flavor}'"
 			delete_pkg "${pkg}"
 			return 0
 		fi
@@ -5693,8 +5711,23 @@ gather_port_vars_port() {
 			[ "${origin_flavor}" = "${FLAVOR_DEFAULT}" ] && \
 			    origin_flavor="${default_flavor}"
 			if ! [ -n "${flavors}" -a \
-			    "${origin_flavor}" = "${default_flavor}" ] || \
-			    pkgname_is_queued "${pkgname}"; then
+			    "${origin_flavor}" = "${default_flavor}" ]; then
+				# Not the default FLAVOR.
+				# Is it even a valid FLAVOR though?
+				case " ${flavors} " in
+				*\ ${origin_flavor}\ *)
+					# A superfluous valid FLAVOR, nothing
+					# more to do.
+					return 0
+					;;
+				esac
+				# The FLAVOR is invalid.  It will be marked
+				# IGNORE but we process it far too late.
+				# There is no unique PKGNAME for this lookup
+				# so we must fail now.
+				err 1 "Invalid FLAVOR '${origin_flavor}' for ${COLOR_PORT}${origin}${COLOR_RESET}"
+			fi
+			if pkgname_is_queued "${pkgname}"; then
 				# Nothing more do to.
 				return 0
 			fi
@@ -7357,6 +7390,7 @@ fi
 : ${MUTABLE_BASE:=yes}
 : ${HTML_JSON_UPDATE_INTERVAL:=2}
 : ${HTML_TRACK_REMAINING:=no}
+: ${FORCE_MOUNT_HASH:=no}
 DRY_RUN=0
 
 # Be sure to update poudriere.conf to document the default when changing these

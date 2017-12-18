@@ -30,21 +30,23 @@ usage() {
 poudriere image [parameters] [options]
 
 Parameters:
-    -o outputdir    -- Image destination directory
-    -j jail         -- Jail
-    -p portstree    -- Ports tree
-    -z set          -- Set
-    -s size         -- Set the image size
-    -n imagename    -- The name of the generated image
+    -c overlaydir   -- The content of the overlay directory will be copied into
+                       the image
+    -f packagelist  -- List of packages to install
     -h hostname     -- The image hostname
+    -j jail         -- Jail
+    -m overlaydir   -- Build a miniroot image as well (for tar type images), and
+                       overlay this directory into the miniroot image
+    -n imagename    -- The name of the generated image
+    -o outputdir    -- Image destination directory
+    -p portstree    -- Ports tree
+    -s size         -- Set the image size
     -t type         -- Type of image can be one of (default iso+zmfs):
                     -- iso, iso+mfs, iso+zmfs, usb, usb+mfs, usb+zmfs,
                        rawdisk, zrawdisk, tar, firmware, rawfirmware,
                        embedded
     -X excludefile  -- File containing the list in cpdup format
-    -f packagelist  -- List of packages to install
-    -c overlaydir   -- The content of the overlay directory will be copied into
-                       the image
+    -z set          -- Set
 EOF
 	exit 1
 }
@@ -61,10 +63,80 @@ cleanup_image() {
 	delete_image
 }
 
+recursecopylib() {
+	path=$1
+	case $1 in
+	*/*) ;;
+	lib*)
+		if [ -e "${WRKDIR}/world/lib/$1" ]; then
+			cp ${WRKDIR}/world/lib/$1 ${mroot}/lib
+			path=lib/$1
+		elif [ -e "${WRKDIR}/world/usr/lib/$1" ]; then
+			cp ${WRKDIR}/world/usr/lib/$1 ${mroot}/usr/lib
+			path=usr/lib/$1
+		fi
+		;;
+	esac
+	for i in $( (readelf -d ${mroot}/$path 2>/dev/null || :) | awk '$2 == "NEEDED" { gsub(/\[/,"", $NF ); gsub(/\]/,"",$NF) ; print $NF }'); do
+		[ -f ${mroot}/lib/$i ] || recursecopylib $i
+	done
+}
+
+mkminiroot() {
+	msg "Making miniroot"
+	[ -z "${MINIROOT}" ] && err 1 "MINIROOT not defined"
+	mroot=${WRKDIR}/miniroot
+	dirs="etc dev boot bin usr/bin libexec lib usr/lib sbin"
+	files="sbin/init etc/pwd.db etc/spwd.db"
+	files="${files} bin/sh sbin/halt sbin/fasthalt sbin/fastboot sbin/reboot"
+	files="${files} usr/bin/bsdtar libexec/ld-elf.so.1 sbin/newfs"
+	files="${files} sbin/mdconfig usr/bin/fetch sbin/ifconfig sbin/route sbin/mount"
+	files="${files} sbin/umount bin/mkdir bin/kenv usr/bin/sed"
+
+	for d in ${dirs}; do
+		mkdir -p ${mroot}/${d}
+	done
+
+	for f in ${files}; do
+		cp -p ${WRKDIR}/world/${f} ${mroot}/${f}
+		recursecopylib ${f}
+	done
+	cp -fRLp ${MINIROOT}/ ${mroot}/
+
+	makefs ${OUTPUTDIR}/${IMAGENAME}-miniroot ${mroot}
+	[ -f ${OUTPUTDIR}/${IMAGENAME}-miniroot.gz ] && rm ${OUTPUTDIR}/${IMAGENAME}-miniroot.gz
+	gzip -9 ${OUTPUTDIR}/${IMAGENAME}-miniroot
+}
+
 . ${SCRIPTPREFIX}/common.sh
 
-while getopts "o:j:p:z:n:t:X:f:c:h:s:" FLAG; do
+while getopts "c:f:h:j:m:n:o:p:s:t:X:z:" FLAG; do
 	case "${FLAG}" in
+		c)
+			[ -d "${OPTARG}" ] || err 1 "No such extract directory: ${OPTARG}"
+			EXTRADIR=$(realpath ${OPTARG})
+			;;
+		f)
+			# If this is a relative path, add in ${PWD} as
+			# a cd / was done.
+			[ "${OPTARG#/}" = "${OPTARG}" ] && \
+			    OPTARG="${SAVED_PWD}/${OPTARG}"
+			[ -f "${OPTARG}" ] || err 1 "No such package list: ${OPTARG}"
+			PACKAGELIST=${OPTARG}
+			;;
+		h)
+			HOSTNAME=${OPTARG}
+			;;
+		j)
+			JAILNAME=${OPTARG}
+			;;
+		m)
+			[ -d "${OPTARG}" ] || err 1 "No such miniroot overlay directory: ${OPTARG}"
+			MINIROOT=$(realpath ${OPTARG})
+			;;
+		n)
+			IMAGENAME=${OPTARG}
+			;;
 		o)
 			# If this is a relative path, add in ${PWD} as
 			# a cd / was done.
@@ -72,11 +144,11 @@ while getopts "o:j:p:z:n:t:X:f:c:h:s:" FLAG; do
 			    OPTARG="${SAVED_PWD}/${OPTARG}"
 			OUTPUTDIR=${OPTARG}
 			;;
-		j)
-			JAILNAME=${OPTARG}
-			;;
 		p)
 			PTNAME=${OPTARG}
+			;;
+		s)
+			IMAGESIZE="${OPTARG}"
 			;;
 		t)
 			MEDIATYPE=${OPTARG}
@@ -87,12 +159,6 @@ while getopts "o:j:p:z:n:t:X:f:c:h:s:" FLAG; do
 			*) err 1 "invalid mediatype: ${MEDIATYPE}"
 			esac
 			;;
-		n)
-			IMAGENAME=${OPTARG}
-			;;
-		h)
-			HOSTNAME=${OPTARG}
-			;;
 		X)
 			[ -f "${OPTARG}" ] || err 1 "No such exclude list ${OPTARG}"
 			EXCLUDELIST=$(realpath ${OPTARG})
@@ -100,21 +166,6 @@ while getopts "o:j:p:z:n:t:X:f:c:h:s:" FLAG; do
 		z)
 			[ -n "${OPTARG}" ] || err 1 "Empty set name"
 			SETNAME="${OPTARG}"
-			;;
-		s)
-			IMAGESIZE="${OPTARG}"
-			;;
-		f)
-			# If this is a relative path, add in ${PWD} as
-			# a cd / was done.
-			[ "${OPTARG#/}" = "${OPTARG}" ] && \
-			    OPTARG="${SAVED_PWD}/${OPTARG}"
-			[ -f "${OPTARG}" ] || err 1 "No such package list: ${OPTARG}"
-			PACKAGELIST=${OPTARG}
-			;;
-		c)
-			[ -d "${OPTARG}" ] || err 1 "No such extract directory: ${OPTARG}"
-			EXTRADIR=$(realpath ${OPTARG})
 			;;
 		*)
 			echo "Unknown flag '${FLAG}'"
@@ -403,6 +454,11 @@ zrawdisk)
 	cat >> ${WRKDIR}/world/boot/loader.conf <<-EOF
 	vfs.root.mountfrom="zfs:${zroot}/ROOT/default"
 	EOF
+	;;
+tar)
+	if [ -n "${MINIROOT}" ]; then
+		mkminiroot
+	fi
 	;;
 esac
 

@@ -140,6 +140,9 @@ msg_verbose() {
 
 msg_error() {
 	local -; set +x
+	local MSG_NESTED
+
+	MSG_NESTED="${MSG_NESTED_STDERR:-0}"
 	if [ -n "${MY_JOBID}" ]; then
 		# Send colored msg to bulk log...
 		COLOR_ARROW="${COLOR_ERROR}" job_msg "${COLOR_ERROR}Error: $1"
@@ -155,16 +158,25 @@ msg_error() {
 }
 
 msg_dev() {
+	local MSG_NESTED
+
+	MSG_NESTED="${MSG_NESTED_STDERR:-0}"
 	COLOR_ARROW="${COLOR_DEV}" \
 	    _msg_n "\n" "${COLOR_DEV}Dev: $@" >&2
 }
 
 msg_debug() {
+	local MSG_NESTED
+
+	MSG_NESTED="${MSG_NESTED_STDERR:-0}"
 	COLOR_ARROW="${COLOR_DEBUG}" \
 	    _msg_n "\n" "${COLOR_DEBUG}Debug: $@" >&2
 }
 
 msg_warn() {
+	local MSG_NESTED
+
+	MSG_NESTED="${MSG_NESTED_STDERR:-0}"
 	COLOR_ARROW="${COLOR_WARN}" \
 	    _msg_n "\n" "${COLOR_WARN}Warning: $@" >&2
 }
@@ -690,7 +702,7 @@ log_start() {
 	_log_path_top log_top
 
 	logfile="${log}/logs/${PKGNAME}.log"
-	latest_log=${log_top}/latest-per-pkg/${PKGNAME%-*}/${PKGNAME##*-}
+	latest_log=${log_top}/latest-per-pkg/${PKGBASE}/${PKGNAME##*-}
 
 	# Make sure directory exists
 	mkdir -p ${log}/logs ${latest_log}
@@ -711,7 +723,10 @@ log_start() {
 		[ ! -e ${logfile}.pipe ] && mkfifo ${logfile}.pipe
 		if [ ${need_tee} -eq 1 ]; then
 			if [ "${TIMESTAMP_LOGS}" = "yes" ]; then
-				timestamp < ${logfile}.pipe | tee ${logfile} &
+				# Unbuffered for 'echo -n' support.
+				# Otherwise need setbuf -o L here due to
+				# stdout not writing to terminal but to tee.
+				timestamp -u < ${logfile}.pipe | tee ${logfile} &
 			else
 				tee ${logfile} < ${logfile}.pipe &
 			fi
@@ -2408,7 +2423,8 @@ jail_start() {
 	msg "Mounting system devices for ${MASTERNAME}"
 	do_jail_mounts "${mnt}" "${tomnt}" ${arch} ${name}
 
-	PACKAGES=${POUDRIERE_DATA}/packages/${MASTERNAME}
+	# May already be set for pkgclean
+	: ${PACKAGES:=${POUDRIERE_DATA}/packages/${MASTERNAME}}
 
 	msg "Mounting ports/packages/distfiles"
 
@@ -2761,20 +2777,20 @@ package_dir_exists_and_has_packages() {
 sanity_check_pkg() {
 	[ $# -eq 1 ] || eargs sanity_check_pkg pkg
 	local pkg="$1"
-	local depfile pkgname
+	local compiled_deps_pkgnames pkgname dep_pkgname
 
 	pkgname="${pkg##*/}"
 	pkgname="${pkgname%.*}"
 	pkgbase_is_needed "${pkgname}" || return 0
-	deps_file depfile "${pkg}"
-	while read dep; do
-		if [ ! -e "${PACKAGES}/All/${dep}.${PKG_EXT}" ]; then
-			msg_debug "${pkg} needs missing ${PACKAGES}/All/${dep}.${PKG_EXT}"
-			msg "Deleting ${pkg##*/}: missing dependency: ${dep}"
+	pkg_get_dep_origin_pkgnames '' compiled_deps_pkgnames "${pkg}"
+	for dep_pkgname in ${compiled_deps_pkgnames}; do
+		if [ ! -e "${PACKAGES}/All/${dep_pkgname}.${PKG_EXT}" ]; then
+			msg_debug "${pkg} needs missing ${PACKAGES}/All/${dep_pkgname}.${PKG_EXT}"
+			msg "Deleting ${pkg##*/}: missing dependency: ${dep_pkgname}"
 			delete_pkg "${pkg}"
 			return 65	# Package deleted, need another pass
 		fi
-	done < "${depfile}"
+	done
 
 	return 0
 }
@@ -2940,7 +2956,7 @@ _real_build_port() {
 	local jailuser
 	local testfailure=0
 	local max_execution_time allownetworking
-	local _need_root NEED_ROOT PREFIX
+	local _need_root NEED_ROOT PREFIX max_files
 
 	_my_path mnt
 	_log_path log
@@ -2969,7 +2985,7 @@ _real_build_port() {
 	fi
 
 	for jpkg in ${ALLOW_MAKE_JOBS_PACKAGES}; do
-		case "${PKGNAME%-*}" in
+		case "${PKGBASE}" in
 		${jpkg})
 			job_msg_verbose "Allowing MAKE_JOBS for ${COLOR_PORT}${port}${flavor:+@${flavor}} | ${PKGNAME}${COLOR_RESET}"
 			sed -i '' '/DISABLE_MAKE_JOBS=poudriere/d' \
@@ -2980,7 +2996,7 @@ _real_build_port() {
 	done
 	allownetworking=0
 	for jpkg in ${ALLOW_NETWORKING_PACKAGES}; do
-		case "${PKGNAME%-*}" in
+		case "${PKGBASE}" in
 		${jpkg})
 			job_msg_warn "ALLOW_NETWORKING_PACKAGES: Allowing full network access for ${COLOR_PORT}${port}${flavor:+@${flavor}} | ${PKGNAME}${COLOR_RESET}"
 			msg_warn "ALLOW_NETWORKING_PACKAGES: Allowing full network access for ${COLOR_PORT}${port}${flavor:+@${flavor}} | ${PKGNAME}${COLOR_RESET}"
@@ -3921,6 +3937,7 @@ build_pkg() {
 	clean_rdepends=
 	trap '' SIGTSTP
 	PKGNAME="${pkgname}" # set ASAP so jail_cleanup() can use it
+	PKGBASE="${PKGNAME%-*}"
 	setproctitle "build_pkg (${pkgname})" || :
 
 	# Don't show timestamps in msg() which goes to logs, only job_msg()
@@ -3943,6 +3960,8 @@ build_pkg() {
 	fi
 	portdir="${PORTSDIR}/${port}"
 
+	_gsub "${PKGBASE}" "${HASH_VAR_NAME_SUB_GLOB}" '_'
+	eval "MAX_FILES=\${MAX_FILES_${_gsub}:-${DEFAULT_MAX_FILES}}"
 	if [ -n "${MAX_MEMORY_BYTES}" -o -n "${MAX_FILES}" ]; then
 		JEXEC_LIMITS=1
 	fi
@@ -4020,7 +4039,8 @@ build_pkg() {
 			COLOR_ARROW="${COLOR_SUCCESS}" job_msg "${COLOR_SUCCESS}Finished ${COLOR_PORT}${port}${FLAVOR:+@${FLAVOR}} | ${PKGNAME}${COLOR_SUCCESS}: Success"
 			run_hook pkgbuild success "${port}" "${PKGNAME}" >&3
 			# Cache information for next run
-			pkg_cacher_queue "${port}" "${pkgname}" || :
+			pkg_cacher_queue "${port}" "${pkgname}" \
+			    "${DEPENDS_ARGS}" "${FLAVOR}" || :
 		else
 			# Symlink the buildlog into errors/
 			ln -s ../${PKGNAME}.log ${log}/logs/errors/${PKGNAME}.log
@@ -4091,12 +4111,12 @@ stop_build() {
 prefix_stderr_quick() {
 	local -; set +x
 	local extra="$1"
-	local MSG_NESTED
+	local MSG_NESTED_STDERR
 	shift 1
 
 	{
 		{
-			MSG_NESTED=1
+			MSG_NESTED_STDERR=1
 			"$@"
 		} 2>&1 1>&3 | {
 			setproctitle "${PROC_TITLE} (prefix_stderr_quick)"
@@ -4111,7 +4131,7 @@ prefix_stderr() {
 	local extra="$1"
 	shift 1
 	local prefixpipe prefixpid ret
-	local MSG_NESTED
+	local MSG_NESTED_STDERR
 
 	prefixpipe=$(mktemp -ut prefix_stderr.pipe)
 	mkfifo "${prefixpipe}"
@@ -4127,7 +4147,7 @@ prefix_stderr() {
 	exec 2> "${prefixpipe}"
 	unlink "${prefixpipe}"
 
-	MSG_NESTED=1
+	MSG_NESTED_STDERR=1
 	ret=0
 	"$@" || ret=$?
 
@@ -4551,155 +4571,114 @@ deps_fetch_vars() {
 	fi
 }
 
-deps_file() {
-	[ $# -ne 2 ] && eargs deps_file var_return pkg
-	local var_return="$1"
-	local pkg="$2"
-	local pkg_cache_dir
-	local _depfile
-
-	get_pkg_cache_dir pkg_cache_dir "${pkg}"
-	_depfile="${pkg_cache_dir}/deps"
-
-	if [ ! -f "${_depfile}" ]; then
-		injail ${PKG_BIN} info -qdF "/packages/All/${pkg##*/}" > "${_depfile}"
-	fi
-
-	setvar "${var_return}" "${_depfile}"
-}
-
 pkg_get_origin() {
 	[ $# -lt 2 ] && eargs pkg_get_origin var_return pkg [origin]
 	local var_return="$1"
 	local pkg="$2"
 	local _origin=$3
-	local pkg_cache_dir
-	local originfile
+	local SHASH_VAR_PATH
 
-	get_pkg_cache_dir pkg_cache_dir "${pkg}"
-	originfile="${pkg_cache_dir}/origin"
-
-	if [ ! -f "${originfile}" ]; then
+	get_pkg_cache_dir SHASH_VAR_PATH "${pkg}"
+	if ! shash_get 'pkg' 'origin' _origin; then
 		if [ -z "${_origin}" ]; then
 			_origin=$(injail ${PKG_BIN} query -F \
-				"/packages/All/${pkg##*/}" "%o")
+			    "/packages/All/${pkg##*/}" "%o")
 		fi
-		echo ${_origin} > "${originfile}"
-	else
-		read_line _origin "${originfile}"
+		shash_set 'pkg' 'origin' "${_origin}"
 	fi
-
-
-	setvar "${var_return}" "${_origin}"
-
-	[ -n "${_origin}" ]
+	if [ -n "${var_return}" ]; then
+		setvar "${var_return}" "${_origin}"
+	fi
 }
 
 pkg_get_flavor() {
-	[ $# -eq 2 ] || eargs pkg_get_flavor var_return pkg
+	[ $# -lt 2 ] && eargs pkg_get_flavor var_return pkg [flavor]
 	local var_return="$1"
 	local pkg="$2"
-	local pkg_cache_dir
-	local _flavor cachefile
+	local _flavor="$3"
+	local SHASH_VAR_PATH
 
-	get_pkg_cache_dir pkg_cache_dir "${pkg}"
-	cachefile="${pkg_cache_dir}/flavor"
-
-	if [ ! -f "${cachefile}" ]; then
+	get_pkg_cache_dir SHASH_VAR_PATH "${pkg}"
+	if ! shash_get 'pkg' 'flavor' _flavor; then
 		if [ -z "${_flavor}" ]; then
-			if [ "${PKG_EXT}" != "tbz" ]; then
-				_flavor=$(injail ${PKG_BIN} query -F \
-					"/packages/All/${pkg##*/}" \
-					'%At %Av' | \
-					awk '$1 == "flavor" {print $2}')
-			fi
+			_flavor=$(injail ${PKG_BIN} query -F \
+				"/packages/All/${pkg##*/}" \
+				'%At %Av' | \
+				awk '$1 == "flavor" {print $2}')
 		fi
-		echo ${_flavor} > "${cachefile}"
-	else
-		read_line _flavor "${cachefile}"
+		shash_set 'pkg' 'flavor' "${_flavor}"
 	fi
-
-	setvar "${var_return}" "${_flavor}"
+	if [ -n "${var_return}" ]; then
+		setvar "${var_return}" "${_flavor}"
+	fi
 }
 
 pkg_get_dep_args() {
-	[ $# -eq 2 ] || eargs pkg_get_dep_args var_return pkg
+	[ $# -lt 2 ] && eargs pkg_get_dep_args var_return pkg [dep_args]
 	local var_return="$1"
 	local pkg="$2"
-	local pkg_cache_dir
-	local _dep_args cachefile
+	local _dep_args="$3"
+	local SHASH_VAR_PATH
 
-	get_pkg_cache_dir pkg_cache_dir "${pkg}"
-	cachefile="${pkg_cache_dir}/dep_args"
-
-	if [ ! -f "${cachefile}" ]; then
+	get_pkg_cache_dir SHASH_VAR_PATH "${pkg}"
+	if ! shash_get 'pkg' 'dep_args' _dep_args; then
 		if [ -z "${_dep_args}" ]; then
-			if [ "${PKG_EXT}" != "tbz" ]; then
-				_dep_args=$(injail ${PKG_BIN} query -F \
-					"/packages/All/${pkg##*/}" \
-					'%At %Av' | \
-					awk '$1 == "depends_args" {print $2}')
-			fi
+			_dep_args=$(injail ${PKG_BIN} query -F \
+				"/packages/All/${pkg##*/}" \
+				'%At %Av' | \
+				awk '$1 == "depends_args" {print $2}')
 		fi
-		echo ${_dep_args} > "${cachefile}"
-	else
-		read_line _dep_args "${cachefile}"
+		shash_set 'pkg' 'dep_args' "${_dep_args}"
 	fi
-
-	setvar "${var_return}" "${_dep_args}"
+	if [ -n "${var_return}" ]; then
+		setvar "${var_return}" "${_dep_args}"
+	fi
 }
 
-pkg_get_dep_origin_pkgbase() {
-	[ $# -ne 3 ] && eargs pkg_get_dep_origin_pkgbase var_return_origin \
-	    var_return_pkgbase pkg
-	local var_return_origin="$1"
-	local var_return_pkgbase="$2"
+pkg_get_dep_origin_pkgnames() {
+	[ $# -ne 3 ] && eargs pkg_get_dep_origin_pkgnames var_return_origins \
+	    var_return_pkgnames pkg
+	local var_return_origins="$1"
+	local var_return_pkgnames="$2"
 	local pkg="$3"
-	local cachefile
-	local pkg_cache_dir
-	local fetch_data compiled_dep_origins compiled_dep_pkgbases
-	local origin new_origin _old_dep_origins pkgbase
+	local SHASH_VAR_PATH
+	local fetched_data compiled_dep_origins compiled_dep_pkgnames
+	local origin pkgname
 
-	get_pkg_cache_dir pkg_cache_dir "${pkg}"
-	cachefile="${pkg_cache_dir}/dep_origin_pkgbases"
-
-	if [ ! -f "${cachefile}" ]; then
+	get_pkg_cache_dir SHASH_VAR_PATH "${pkg}"
+	if ! shash_get 'pkg' 'deps' fetched_data; then
 		fetched_data=$(injail ${PKG_BIN} query -F \
-			"/packages/All/${pkg##*/}" '%do %dn' | tr '\n' ' ')
-		echo "${fetched_data}" > "${cachefile}"
-	else
-		while read line; do
-			fetched_data="${fetched_data}${fetched_data:+ }${line}"
-		done < "${cachefile}"
+			"/packages/All/${pkg##*/}" '%do %dn-%dv' | tr '\n' ' ')
+		shash_set 'pkg' 'deps' "${fetched_data}"
 	fi
-
-	# Split the data and check MOVED
+	[ -n "${var_return_origins}" -o -n "${var_return_pkgnames}" ] || \
+	    return 0
+	# Split the data
 	set -- ${fetched_data}
 	while [ $# -ne 0 ]; do
 		origin="$1"
-		pkgbase="$2"
-		check_moved new_origin "${origin}" && origin="${new_origin}"
+		pkgname="$2"
 		compiled_dep_origins="${compiled_dep_origins}${compiled_dep_origins:+ }${origin}"
-		compiled_dep_pkgbases="${compiled_dep_pkgbases}${compiled_dep_pkgbases:+ }${pkgbase}"
+		compiled_dep_pkgnames="${compiled_dep_pkgnames}${compiled_dep_pkgnames:+ }${pkgname}"
 		shift 2
 	done
-
-	setvar "${var_return_origin}" "${compiled_dep_origins}"
-	setvar "${var_return_pkgbase}" "${compiled_dep_pkgbases}"
+	if [ -n "${var_return_origins}" ]; then
+		setvar "${var_return_origins}" "${compiled_dep_origins}"
+	fi
+	if [ -n "${var_return_pkgnames}" ]; then
+		setvar "${var_return_pkgnames}" "${compiled_dep_pkgnames}"
+	fi
 }
 
 pkg_get_options() {
 	[ $# -ne 2 ] && eargs pkg_get_options var_return pkg
 	local var_return="$1"
 	local pkg="$2"
-	local optionsfile
-	local pkg_cache_dir
+	local SHASH_VAR_PATH
 	local _compiled_options
 
-	get_pkg_cache_dir pkg_cache_dir "${pkg}"
-	optionsfile="${pkg_cache_dir}/options"
-
-	if [ ! -f "${optionsfile}" ]; then
+	get_pkg_cache_dir SHASH_VAR_PATH "${pkg}"
+	if ! shash_get 'pkg' 'options' _compiled_options; then
 		_compiled_options=
 		while read key value; do
 			case "${value}" in
@@ -4713,20 +4692,15 @@ pkg_get_options() {
 		if [ -n "${_compiled_options}" ]; then
 			_compiled_options="${_compiled_options} "
 		fi
-		echo "${_compiled_options}" > "${optionsfile}"
-		setvar "${var_return}" "${_compiled_options}"
-		return 0
+		shash_set 'pkg' 'options' "${_compiled_options}"
+	else
+		# Space on end to match 'pretty-print-config' in delete_old_pkg
+		[ -n "${_compiled_options}" ] &&
+		    _compiled_options="${_compiled_options} "
 	fi
-
-	# Special care here to match whitespace of 'pretty-print-config'
-	while read line; do
-		_compiled_options="${_compiled_options}${_compiled_options:+ }${line}"
-	done < "${optionsfile}"
-
-	# Space on end to match 'pretty-print-config' in delete_old_pkg
-	[ -n "${_compiled_options}" ] &&
-	    _compiled_options="${_compiled_options} "
-	setvar "${var_return}" "${_compiled_options}"
+	if [ -n "${var_return}" ]; then
+		setvar "${var_return}" "${_compiled_options}"
+	fi
 }
 
 ensure_pkg_installed() {
@@ -4748,33 +4722,35 @@ ensure_pkg_installed() {
 }
 
 pkg_cache_data() {
-	[ $# -ne 2 ] && eargs pkg_cache_data pkg origin
+	[ $# -eq 4 ] || eargs pkg_cache_data pkg origin dep_args flavor
 	local pkg="$1"
 	local origin="$2"
+	local dep_args="$3"
+	local flavor="$4"
 	local _ignored
 
 	ensure_pkg_installed || return 1
-	pkg_get_options _ignored "${pkg}" > /dev/null
-	pkg_get_origin _ignored "${pkg}" "${origin}" > /dev/null
+	pkg_get_options '' "${pkg}" > /dev/null
+	pkg_get_origin '' "${pkg}" "${origin}" > /dev/null
 	if have_ports_feature FLAVORS; then
-		pkg_get_flavor _ignored "${pkg}" > /dev/null
+		pkg_get_flavor '' "${pkg}" "${flavor}" > /dev/null
 	elif have_ports_feature DEPENDS_ARGS; then
-		pkg_get_dep_args _ignored "${pkg}" > /dev/null
+		pkg_get_dep_args '' "${pkg}" "${dep_args}" > /dev/null
 	fi
-	pkg_get_dep_origin_pkgbase _ignored _ignored "${pkg}" > /dev/null
-	deps_file _ignored "${pkg}" > /dev/null
+	pkg_get_dep_origin_pkgnames '' '' "${pkg}" > /dev/null
 }
 
 pkg_cacher_queue() {
-	[ $# -eq 2 ] || eargs pkg_cacher_queue origin pkgname
-	local origin="$1"
-	local pkgname="$2"
+	[ $# -eq 4 ] || eargs pkg_cacher_queue origin pkgname dep_args flavor
+	local encoded_data
 
-	echo "${origin} ${pkgname}" > ${MASTERMNT}/.p/pkg_cacher.pipe
+	encode_args encoded_data "$@"
+
+	echo "${encoded_data}" > ${MASTERMNT}/.p/pkg_cacher.pipe
 }
 
 pkg_cacher_main() {
-	local pkg pkgname origin work
+	local pkg work pkgname origin dep_args flavor
 
 	mkfifo ${MASTERMNT}/.p/pkg_cacher.pipe
 	exec 6<> ${MASTERMNT}/.p/pkg_cacher.pipe
@@ -4785,12 +4761,15 @@ pkg_cacher_main() {
 	# Wait for packages to process.
 	while :; do
 		read -r work <&6
-		set -- ${work}
+		eval $(decode_args work)
 		origin="$1"
 		pkgname="$2"
+		dep_args="$3"
+		flavor="$4"
 		pkg="${PACKAGES}/All/${pkgname}.${PKG_EXT}"
 		if [ -f "${pkg}" ]; then
-			pkg_cache_data "${pkg}" "${origin}"
+			pkg_cache_data "${pkg}" "${origin}" "${dep_args}" \
+			    "${flavor}"
 		fi
 	done
 }
@@ -4800,8 +4779,7 @@ pkg_cacher_cleanup() {
 }
 
 get_cache_dir() {
-	local var_return="$1"
-	setvar "${var_return}" ${POUDRIERE_DATA}/cache/${MASTERNAME}
+	setvar "${1}" ${POUDRIERE_DATA}/cache/${MASTERNAME}
 }
 
 # Return the cache dir for the given pkg
@@ -4838,6 +4816,7 @@ clear_pkg_cache() {
 	get_pkg_cache_dir pkg_cache_dir "${pkg}" 0
 
 	rm -fr "${pkg_cache_dir}"
+	# XXX: Need shash_unset with glob
 }
 
 delete_pkg() {
@@ -4865,6 +4844,7 @@ delete_pkg_xargs() {
 		echo "${pkg}"
 		echo "${pkg_cache_dir}"
 	} >> "${listfile}"
+	# XXX: May need clear_pkg_cache here if shash changes from file.
 }
 
 # Deleted cached information for stale packages (manually removed)
@@ -4894,7 +4874,8 @@ delete_old_pkg() {
 	local mnt pkgname new_pkgname
 	local origin v v2 compiled_options current_options current_deps
 	local td d key dpath dir found raw_deps compiled_deps
-	local pkg_origin compiled_deps_pkgbases
+	local pkg_origin compiled_deps_pkgnames compiled_deps_pkgbases
+	local compiled_deps_pkgname compiled_deps_origin compiled_deps_new
 	local pkgbase new_pkgbase flavor pkg_flavor originspec
 	local dep_pkgname dep_pkgbase dep_origin dep_flavor dep_dep_args
 	local new_origin stale_pkg dep_args pkg_dep_args
@@ -5080,9 +5061,22 @@ delete_old_pkg() {
 				fi
 			done
 		done
-		[ -n "${current_deps}" ] && \
-		    pkg_get_dep_origin_pkgbase \
-		    compiled_deps compiled_deps_pkgbases "${pkg}"
+		if [ -n "${current_deps}" ]; then
+			pkg_get_dep_origin_pkgnames \
+			    compiled_deps compiled_deps_pkgnames "${pkg}"
+			for compiled_deps_pkgname in \
+			    ${compiled_deps_pkgnames}; do
+				compiled_deps_pkgbases="${compiled_deps_pkgbases:+${compiled_deps_pkgbases} }${compiled_deps_pkgname%-*}"
+			done
+			# Handle MOVED
+			for compiled_deps_origin in ${compiled_deps}; do
+				check_moved new_origin \
+				    "${compiled_deps_origin}" && \
+				    compiled_deps_origin="${new_origin}"
+				compiled_deps_new="${compiled_deps_new:+${compiled_deps_new} }${compiled_deps_origin}"
+			done
+			compiled_deps="${compiled_deps_new}"
+		fi
 		# To handle FLAVOR/DEPENDS_ARGS here we can't just use
 		# a simple origin comparison, which is what is in deps now.
 		# We need to map all of the deps to PKGNAMEs which is
@@ -5549,6 +5543,14 @@ gather_port_vars() {
 			if [ -n "${dep_args}" ]; then
 				continue
 			fi
+
+			# Testport already looked up the main FLAVOR
+			if was_a_testport_run && \
+			    [ -n "${ORIGIN}" ] && \
+			    [ "${origin}" = "${ORIGIN}" ]; then
+				continue
+			fi
+
 			# Now handle adding the main port without
 			# FLAVOR.  Only do this if the main port
 			# wasn't already listed.  The 'metadata'
@@ -5647,6 +5649,36 @@ gather_port_vars() {
 	fi
 	unlink "${qlist}" || :
 	run_hook gather_port_vars stop
+}
+
+# Dependency policy/assertions.
+deps_sanity() {
+	[ "${PWD}" = "${MASTERMNT}/.p" ] || \
+	    err 1 "deps_sanity requires PWD=${MASTERMNT}/.p"
+	[ $# -eq 2 ] || eargs deps_sanity originspec deps
+	local originspec="${1}"
+	local deps="${2}"
+	local origin dep_originspec dep_origin dep_flavor
+
+	originspec_decode "${originspec}" origin '' ''
+
+	for dep_originspec in ${deps}; do
+		originspec_decode "${dep_originspec}" dep_origin '' dep_flavor
+		msg_verbose "${COLOR_PORT}${originspec}${COLOR_RESET} depends on ${COLOR_PORT}${dep_originspec}"
+		if [ "${origin}" = "${dep_origin}" ]; then
+			msg_error "${COLOR_PORT}${origin}${COLOR_RESET} incorrectly depends on itself. Please contact maintainer of the port to fix this."
+			return 1
+		fi
+		# Detect bad cat/origin/ dependency which pkg will not register properly
+		if ! [ "${dep_origin}" = "${dep_origin%/}" ]; then
+			msg_error "${COLOR_PORT}${origin}${COLOR_RESET} depends on bad origin '${COLOR_PORT}${dep_origin}${COLOR_RESET}'; Please contact maintainer of the port to fix this."
+			return 1
+		fi
+		if ! [ -d "../${PORTSDIR}/${dep_origin}" ]; then
+			msg_error "${COLOR_PORT}${origin}${COLOR_RESET} depends on nonexistent origin '${COLOR_PORT}${dep_origin}${COLOR_RESET}'; Please contact maintainer of the port to fix this."
+			return 1
+		fi
+	done
 }
 
 gather_port_vars_port() {
@@ -5817,26 +5849,10 @@ gather_port_vars_port() {
 
 	# Assert some policy before proceeding to process these deps
 	# further.
-	for dep_originspec in ${deps}; do
-		originspec_decode "${dep_originspec}" dep_origin '' dep_flavor
-		msg_verbose "${COLOR_PORT}${originspec}${COLOR_RESET} depends on ${COLOR_PORT}${dep_originspec}"
-		if [ "${origin}" = "${dep_origin}" ]; then
-			msg_error "${COLOR_PORT}${origin}${COLOR_RESET} incorrectly depends on itself. Please contact maintainer of the port to fix this."
-			set_dep_fatal_error
-			return 1
-		fi
-		# Detect bad cat/origin/ dependency which pkg will not register properly
-		if ! [ "${dep_origin}" = "${dep_origin%/}" ]; then
-			msg_error "${COLOR_PORT}${origin}${COLOR_RESET} depends on bad origin '${COLOR_PORT}${dep_origin}${COLOR_RESET}'; Please contact maintainer of the port to fix this."
-			set_dep_fatal_error
-			return 1
-		fi
-		if ! [ -d "../${PORTSDIR}/${dep_origin}" ]; then
-			msg_error "${COLOR_PORT}${origin}${COLOR_RESET} depends on nonexistent origin '${COLOR_PORT}${dep_origin}${COLOR_RESET}'; Please contact maintainer of the port to fix this."
-			set_dep_fatal_error
-			return 1
-		fi
-	done
+	if ! deps_sanity "${originspec}" "${deps}"; then
+		set_dep_fatal_error
+		return 1
+	fi
 
 	# In the -a case, there's no need to use the depqueue to add
 	# dependencies into the gatherqueue for those without a DEPENDS_ARGS
@@ -6567,13 +6583,23 @@ prepare_ports() {
 			err ${ret} "deps_fetch_vars failed for ${ORIGINSPEC}"
 			;;
 		esac
-		if have_ports_feature FLAVORS && [ -n "${FLAVORS}" ] && \
-		    [ "${FLAVOR_DEFAULT_ALL}" = "yes" ]; then
-			msg_warn "Only testing first flavor '${FLAVOR}', use 'bulk -t' to test all flavors"
+		if have_ports_feature FLAVORS; then
+			if [ -n "${FLAVORS}" ] && \
+			    [ "${FLAVOR_DEFAULT_ALL}" = "yes" ]; then
+				msg_warn "Only testing first flavor '${FLAVOR}', use 'bulk -t' to test all flavors"
+			fi
+			if [ -n "${dep_flavor}" ]; then
+				# Is it even a valid FLAVOR though?
+				case " ${FLAVORS} " in
+				*\ ${dep_flavor}\ *) ;;
+				*)
+					err 1 "Invalid FLAVOR '${dep_flavor}' for ${COLOR_PORT}${ORIGIN}${COLOR_RESET}"
+					;;
+				esac
+			fi
 		fi
-		for dep_originspec in $(listed_ports); do
-			msg_verbose "${COLOR_PORT}${ORIGINSPEC}${COLOR_RESET} depends on ${COLOR_PORT}${dep_originspec}"
-		done
+		deps_sanity "${ORIGINSPEC}" "${LISTPORTS}" || \
+		    err 1 "Error processing dependencies"
 	fi
 
 	if was_a_bulk_run; then
@@ -7429,6 +7455,7 @@ if [ -n "${MAX_MEMORY}" ]; then
 	MAX_MEMORY_BYTES="$((${MAX_MEMORY} * 1024 * 1024 * 1024))"
 fi
 : ${MAX_FILES:=1024}
+: ${DEFAULT_MAX_FILES:=${MAX_FILES}}
 
 TIME_START=$(clock -monotonic)
 EPOCH_START=$(clock -epoch)

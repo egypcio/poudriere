@@ -268,6 +268,7 @@ if [ -d ${MASTERMNT}${PREFIX} -a "${PREFIX}" != "/usr" ]; then
 fi
 
 PKGENV="PACKAGES=/tmp/pkgs PKGREPOSITORY=/tmp/pkgs"
+PKGBASE="${PKGNAME%-*}"
 MAKE_ARGS="${DEPENDS_ARGS}${FLAVOR:+ FLAVOR=${FLAVOR}}"
 injail install -d -o ${PORTBUILD_USER} /tmp/pkgs
 PORTTESTING=yes
@@ -279,6 +280,8 @@ if ! [ -t 1 ]; then
 	export DEV_WARNING_WAIT=0
 fi
 sed -i '' '/DISABLE_MAKE_JOBS=poudriere/d' ${MASTERMNT}/etc/make.conf
+_gsub "${PKGBASE}" "${HASH_VAR_NAME_SUB_GLOB}" '_'
+eval "MAX_FILES=\${MAX_FILES_${_gsub}:-${DEFAULT_MAX_FILES}}"
 if [ -n "${MAX_MEMORY_BYTES}" -o -n "${MAX_FILES}" ]; then
 	JEXEC_LIMITS=1
 fi

@@ -2478,6 +2478,7 @@ jail_start() {
 	    echo "FORCE_PACKAGE=yes" >> "${tomnt}/etc/make.conf"
 	if [ -z "${NO_PACKAGE_BUILDING}" ]; then
 		echo "PACKAGE_BUILDING=yes" >> "${tomnt}/etc/make.conf"
+		export PACKAGE_BUILDING=yes
 		echo "PACKAGE_BUILDING_FLAVORS=yes" >> "${tomnt}/etc/make.conf"
 	fi
 
@@ -3060,7 +3061,7 @@ _real_build_port() {
 			JUSER=root
 			;;
 		extract)
-			max_execution_time=3600
+			max_execution_time=${MAX_EXECUTION_TIME_EXTRACT}
 			if [ "${JUSER}" != "root" ]; then
 				chown -R ${JUSER} ${mnt}/wrkdirs
 			fi
@@ -3084,12 +3085,12 @@ _real_build_port() {
 		checksum|*-depends) JUSER=root ;;
 		stage) [ -n "${PORTTESTING}" ] && markfs prestage ${mnt} ;;
 		install)
-			max_execution_time=3600
+			max_execution_time=${MAX_EXECUTION_TIME_INSTALL}
 			JUSER=root
 			[ -n "${PORTTESTING}" ] && markfs preinst ${mnt}
 			;;
 		package)
-			max_execution_time=7200
+			max_execution_time=${MAX_EXECUTION_TIME_PACKAGE}
 			if [ -n "${PORTTESTING}" ]; then
 				check_fs_violation ${mnt} prestage \
 				    "${originspec}" \
@@ -3103,7 +3104,7 @@ _real_build_port() {
 			fi
 			;;
 		deinstall)
-			max_execution_time=3600
+			max_execution_time=${MAX_EXECUTION_TIME_DEINSTALL}
 			JUSER=root
 			# Skip for all linux ports, they are not safe
 			if [ "${PKGNAME%%*linux*}" != "" ]; then
@@ -6202,7 +6203,7 @@ origin_should_use_dep_args() {
 }
 
 listed_ports() {
-	_listed_ports | while read originspec; do
+	_listed_ports "$@" | while read originspec; do
 		map_py_slave_port "${originspec}" originspec || :
 		echo "${originspec}"
 	done
@@ -7422,6 +7423,11 @@ DRY_RUN=0
 # Be sure to update poudriere.conf to document the default when changing these
 : ${RESOLV_CONF="/etc/resolv.conf"}
 : ${MAX_EXECUTION_TIME:=86400}         # 24 hours for 1 command (phase)
+# Some phases have different timeouts.
+: ${MAX_EXECUTION_TIME_EXTRACT:=3600}
+: ${MAX_EXECUTION_TIME_INSTALL:=3600}
+: ${MAX_EXECUTION_TIME_PACKAGE:=7200}
+: ${MAX_EXECUTION_TIME_DEINSTALL:=3600}
 : ${NOHANG_TIME:=7200}                 # 120 minutes with no log update
 : ${QEMU_MAX_EXECUTION_TIME:=345600}   # 4 days for 1 command (phase)
 : ${QEMU_NOHANG_TIME:=21600}           # 6 hours with no log update

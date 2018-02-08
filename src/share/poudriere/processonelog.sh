@@ -36,6 +36,8 @@ elif bzgrep -qE "\.(c|cc|cxx|cpp|h|y)[0-9:]+ .+\.[hH](: No such file|' file not 
   reason="missing_header"
 elif bzgrep -qE '(nested function.*declared but never defined|warning: nested extern declaration)' $1; then
   reason="nested_declaration"
+elif bzgrep -qE 'error: .* create dynamic relocation .* against symbol: .* in readonly segment' $1; then
+  reason="lld_linker_error"
 # note: must be run before compiler_error
 elif bzgrep -q '#warning "this file includes <sys/termios.h>' $1; then
   reason="termios"
@@ -145,6 +147,8 @@ elif bzgrep -q "error in dependency .*, exiting" $1; then
   reason="depend_package"
 elif bzgrep -q "/usr/bin/ld: cannot find -l" $1; then
   reason="linker_error"
+elif bzgrep -q "^#error \"" $1; then
+  reason="explicit_error"
 elif bzgrep -q "cd: can't cd to" $1; then
   reason="NFS"
 elif bzgrep -qE "(pkg_create: make_dist: tar command failed with code|pkg-static: lstat|pkg-static DEVELOPER_MODE: Plist error:|Error: check-plist failures)" $1; then

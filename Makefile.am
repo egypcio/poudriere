@@ -35,7 +35,6 @@ hook_DATA=	src/etc/poudriere.d/hooks/bulk.sh.sample \
 dist_pkgdata_DATA=	\
 			src/share/poudriere/api.sh \
 			src/share/poudriere/bulk.sh \
-			src/share/poudriere/clean.sh \
 			src/share/poudriere/common.sh \
 			src/share/poudriere/daemon.sh \
 			src/share/poudriere/distclean.sh \
@@ -69,6 +68,7 @@ dist_awk_DATA= src/share/poudriere/awk/dependency_loop.awk \
 		src/share/poudriere/awk/json.awk \
 		src/share/poudriere/awk/json_jail.awk \
 		src/share/poudriere/awk/json_top.awk \
+		src/share/poudriere/awk/parse_MOVED.awk \
 		src/share/poudriere/awk/processonelog2.awk \
 		src/share/poudriere/awk/siginfo_buildtime.awk
 
@@ -154,13 +154,16 @@ rename_SOURCES=		src/libexec/poudriere/rename/rename.c
 rm_SOURCES=		src/libexec/poudriere/rm/rm.c
 timeout_SOURCES=	src/libexec/poudriere/timeout/timeout.c
 timestamp_SOURCES=	src/libexec/poudriere/timestamp/timestamp.c
+timestamp_LDADD=	-lpthread
 tsort_SOURCES=		src/libexec/poudriere/tsort/tsort.c
 
-sh_CFLAGS=		-DSHELL -DNO_HISTORY -std=gnu99 \
+sh_CFLAGS=		-DSHELL -std=gnu99 ${sh_hist_CFLAGS} \
 			-include $(top_srcdir)/external/sh_compat/compat.h \
 			-I$(top_srcdir)/src \
 			-I$(top_srcdir)/external/sh
-sh_LDADD=
+sh_LDADD=		${sh_hist_LDADD}
+sh_hist_LDADD=		@MAINTAINER_MODE_TRUE@ -ledit
+sh_hist_CFLAGS=		@MAINTAINER_MODE_FALSE@ -DNO_HISTORY
 sh_SOURCES=		external/sh_compat/strchrnul.c \
 			external/sh_compat/utimensat.c \
 			external/sh/alias.c \
@@ -199,11 +202,11 @@ CLEANFILES+=		\
 			src/poudriere-sh/builtins.h \
 			src/poudriere-sh/shell.h
 sh_SOURCES+=		\
-			src/libexec/poudriere/cachec/cachec.c \
 			src/libexec/poudriere/clock/clock.c \
 			src/libexec/poudriere/dirempty/dirempty.c \
 			src/libexec/poudriere/locked_mkdir/locked_mkdir.c \
 			src/libexec/poudriere/pwait/pwait.c \
+			src/libexec/poudriere/rm/rm.c \
 			src/libexec/poudriere/rename/rename.c \
 			src/poudriere-sh/helpers.c \
 			src/poudriere-sh/mkdir.c \
@@ -213,12 +216,14 @@ sh_SOURCES+=		\
 			src/poudriere-sh/rmdir.c \
 			src/poudriere-sh/setproctitle.c \
 			src/poudriere-sh/sleep.c \
+			src/poudriere-sh/traps.c \
 			src/poudriere-sh/touch.c \
 			src/poudriere-sh/unlink.c
 sh_CFLAGS+=		-I$(top_srcdir)/src/poudriere-sh \
 			-I$(top_builddir)/src/poudriere-sh
 # cachec
-sh_LDADD+=		-lrt
+#sh_SOURCES+=		src/libexec/poudriere/cachec/cachec.c
+#sh_LDADD+=		-lrt
 src/poudriere-sh/builtins.def: $(top_srcdir)/external/sh/builtins.def \
     $(top_srcdir)/src/poudriere-sh/builtins-poudriere.def
 	cat $^${.ALLSRC} > $@

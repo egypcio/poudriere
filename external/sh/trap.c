@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1991, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -36,7 +38,7 @@ static char sccsid[] = "@(#)trap.c	8.5 (Berkeley) 6/5/95";
 #endif
 #endif /* not lint */
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD: head/bin/sh/trap.c 319826 2017-06-11 16:54:04Z jilles $");
+__FBSDID("$FreeBSD: head/bin/sh/trap.c 326025 2017-11-20 19:49:47Z pfg $");
 
 #include <signal.h>
 #include <unistd.h>
@@ -72,12 +74,12 @@ __FBSDID("$FreeBSD: head/bin/sh/trap.c 319826 2017-06-11 16:54:04Z jilles $");
 #define S_RESET 5		/* temporary - to reset a hard ignored sig */
 
 
-static char sigmode[NSIG];	/* current value of signal */
+char sigmode[NSIG];	/* current value of signal */
 volatile sig_atomic_t pendingsig;	/* indicates some signal received */
 volatile sig_atomic_t pendingsig_waitcmd;	/* indicates wait builtin should be interrupted */
 static int in_dotrap;			/* do we execute in a trap handler? */
-static char *volatile trap[NSIG];	/* trap handler commands */
-static volatile sig_atomic_t gotsig[NSIG];
+char *volatile trap[NSIG];	/* trap handler commands */
+volatile sig_atomic_t gotsig[NSIG];
 				/* indicates specified signal received */
 static int ignore_sigchld;	/* Used while handling SIGCHLD traps. */
 static int last_trapsig;

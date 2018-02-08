@@ -76,7 +76,7 @@ int
 main(int argc, char *argv[])
 {
 #ifdef SHELL
-	struct sigaction info_oact, alrm_oact;
+	struct sigdata info_oact, alrm_oact;
 #endif
 	struct itimerval itv;
 	int kq;
@@ -219,8 +219,9 @@ main(int argc, char *argv[])
 		/* Ignore SIGALRM to not interrupt kevent(2). */
 #ifdef SHELL
 		trap_push(SIGALRM, &alrm_oact);
-#endif
+#else
 		signal(SIGALRM, SIG_IGN);
+#endif
 		if (setitimer(ITIMER_REAL, &itv, NULL) == -1) {
 #ifdef SHELL
 			close(kq);

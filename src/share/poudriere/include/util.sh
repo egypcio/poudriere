@@ -160,6 +160,7 @@ relpath() {
 	echo "${_relpath}"
 }
 
+if [ "$(type trap_push 2>/dev/null)" != "trap_push is a shell builtin" ]; then
 trap_push() {
 	local -; set +x
 	[ $# -eq 2 ] || eargs trap_push signal var_return
@@ -193,7 +194,7 @@ trap_pop() {
 	local _trap="$2"
 
 	if [ -n "${_trap}" ]; then
-		eval trap -- ${_trap} ${signal} || :
+		eval trap -- "${_trap}" ${signal} || :
 	else
 		return 1
 	fi
@@ -206,6 +207,9 @@ critical_start() {
 	local saved_int saved_term
 
 	_CRITSNEST=$((${_CRITSNEST:-0} + 1))
+	if [ ${_CRITSNEST} -gt 1 ]; then
+		return 0
+	fi
 
 	trap_push INT saved_int
 	: ${_crit_caught_int:=0}
@@ -227,6 +231,7 @@ critical_end() {
 
 	oldnest=${_CRITSNEST}
 	_CRITSNEST=$((${_CRITSNEST} - 1))
+	[ ${_CRITSNEST} -eq 0 ] || return 0
 	if hash_remove crit_saved_trap "INT-${oldnest}" saved_int; then
 		trap_pop INT "${saved_int}"
 	fi
@@ -244,6 +249,7 @@ critical_end() {
 		kill -TERM $(sh -c 'echo ${PPID}')
 	fi
 }
+fi
 
 # Read a file until 0 status is found. Partial reads not accepted.
 read_line() {
@@ -261,7 +267,7 @@ read_line() {
 
 		# Read until a full line is returned.
 		until [ ${reads} -eq ${max_reads} ] || \
-		    read -t 1 -r line < "${file}"; do
+		    IFS= read -t 1 -r line < "${file}"; do
 			sleep 0.1
 			reads=$((${reads} + 1))
 		done
@@ -281,4 +287,166 @@ noclobber() {
 	set -C
 
 	"$@" 2>/dev/null
+}
+
+prefix_stderr_quick() {
+	local -; set +x
+	local extra="$1"
+	local MSG_NESTED_STDERR prefix
+	shift 1
+
+	{
+		{
+			MSG_NESTED_STDERR=1
+			"$@"
+		} 2>&1 1>&3 | {
+			if command -v timestamp >/dev/null && \
+			    [ "$(type timestamp)" = \
+			    "timestamp is a shell builtin" ]; then
+				prefix="$(msg_warn "${extra}:" 2>&1)"
+				timestamp -T -1 "${prefix}" \
+				    -P "poudriere: ${PROC_TITLE} (prefix_stderr_quick)" \
+				    >&2
+			else
+				setproctitle "${PROC_TITLE} (prefix_stderr_quick)"
+				while IFS= read -r line; do
+					msg_warn "${extra}: ${line}"
+				done
+			fi
+		}
+	} 3>&1
+}
+
+prefix_stderr() {
+	local extra="$1"
+	shift 1
+	local prefixpipe prefixpid ret
+	local prefix MSG_NESTED_STDERR
+	local - errexit
+
+	prefixpipe=$(mktemp -ut prefix_stderr.pipe)
+	mkfifo "${prefixpipe}"
+	if command -v timestamp >/dev/null; then
+		prefix="$(msg_warn "${extra}:" 2>&1)"
+		timestamp -T -1 "${prefix}" \
+		    -P "poudriere: ${PROC_TITLE} (prefix_stderr)" \
+		    < "${prefixpipe}" >&2 &
+	else
+		(
+			set +x
+			setproctitle "${PROC_TITLE} (prefix_stderr)"
+			while IFS= read -r line; do
+				msg_warn "${extra}: ${line}"
+			done
+		) < ${prefixpipe} &
+	fi
+	prefixpid=$!
+	exec 4>&2
+	exec 2> "${prefixpipe}"
+	unlink "${prefixpipe}"
+
+	MSG_NESTED_STDERR=1
+	ret=0
+	case $- in *e*) errexit=1; set +e ;; *) errexit=0 ;; esac
+	"$@"
+	ret=$?
+	[ ${errexit} -eq 1 ] && set -e
+
+	exec 2>&4 4>&-
+	timed_wait_and_kill 5 ${prefixpid} || :
+	_wait ${prefixpid} || :
+
+	return ${ret}
+}
+
+prefix_stdout() {
+	local extra="$1"
+	shift 1
+	local prefixpipe prefixpid ret
+	local prefix MSG_NESTED
+	local - errexit
+
+	prefixpipe=$(mktemp -ut prefix_stdout.pipe)
+	mkfifo "${prefixpipe}"
+	if command -v timestamp >/dev/null; then
+		prefix="$(msg "${extra}:")"
+		timestamp -T -1 "${prefix}" \
+		    -P "poudriere: ${PROC_TITLE} (prefix_stdout)" \
+		    < "${prefixpipe}" &
+	else
+		(
+			set +x
+			setproctitle "${PROC_TITLE} (prefix_stdout)"
+			while IFS= read -r line; do
+				msg "${extra}: ${line}"
+			done
+		) < ${prefixpipe} &
+	fi
+	prefixpid=$!
+	exec 3>&1
+	exec > "${prefixpipe}"
+	unlink "${prefixpipe}"
+
+	MSG_NESTED=1
+	ret=0
+	case $- in *e*) errexit=1; set +e ;; *) errexit=0 ;; esac
+	"$@"
+	ret=$?
+	[ ${errexit} -eq 1 ] && set -e
+
+	exec 1>&3 3>&-
+	timed_wait_and_kill 5 ${prefixpid} || :
+	_wait ${prefixpid} || :
+
+	return ${ret}
+}
+
+prefix_output() {
+	local extra="$1"
+	local prefix_stdout prefix_stderr prefixpipe_stdout prefixpipe_stderr
+	local ret MSG_NESTED MSG_NESTED_STDERR
+	local - errexit
+	shift 1
+
+	if ! command -v timestamp >/dev/null; then
+		prefix_stderr "${extra}" prefix_stdout "${extra}" "$@"
+		return
+	fi
+	# Use timestamp's multiple file input feature.
+
+	prefixpipe_stdout=$(mktemp -ut prefix_stdout.pipe)
+	mkfifo "${prefixpipe_stdout}"
+	prefix_stdout="$(msg "${extra}:")"
+
+	prefixpipe_stderr=$(mktemp -ut prefix_stderr.pipe)
+	mkfifo "${prefixpipe_stderr}"
+	prefix_stderr="$(msg_warn "${extra}:" 2>&1)"
+
+	timestamp -T \
+	    -1 "${prefix_stdout}" -o "${prefixpipe_stdout}" \
+	    -2 "${prefix_stderr}" -e "${prefixpipe_stderr}" \
+	    -P "poudriere: ${PROC_TITLE} (prefix_output)" \
+	    &
+
+	prefixpid=$!
+	exec 3>&1
+	exec > "${prefixpipe_stdout}"
+	unlink "${prefixpipe_stdout}"
+	exec 4>&2
+	exec 2> "${prefixpipe_stderr}"
+	unlink "${prefixpipe_stderr}"
+
+	MSG_NESTED=1
+	MSG_NESTED_STDERR=1
+	ret=0
+	case $- in *e*) errexit=1; set +e ;; *) errexit=0 ;; esac
+	"$@"
+	ret=$?
+	[ ${errexit} -eq 1 ] && set -e
+
+	exec 1>&3 3>&- 2>&4 4>&-
+	timed_wait_and_kill 5 ${prefixpid} || :
+	_wait ${prefixpid} || :
+
+	return ${ret}
 }

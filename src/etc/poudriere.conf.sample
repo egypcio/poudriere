@@ -4,12 +4,12 @@
 # 
 #### ZFS
 # The pool where poudriere will create all the filesystems it needs
-# poudriere will use tank/${ZROOTFS} as its root
+# poudriere will use ${ZPOOL}/${ZROOTFS} as its root
 #
 # You need at least 7GB of free space in this pool to have a working
 # poudriere.
 #
-#ZPOOL=tank
+#ZPOOL=zroot
 
 ### NO ZFS
 # To not use ZFS, define NO_ZFS=yes
@@ -75,6 +75,8 @@ USE_TMPFS=yes
 #MAX_MEMORY=8
 
 # How many file descriptors to limit each jail process to (default: 1024)
+# This can also be set per PKGBASE, such as MAX_FILES_RStudio=2048.
+# Package names with hyphens (-) should be replaced with underscores (_).
 #MAX_FILES=1024
 
 # If set the given directory will be used for the distfiles
@@ -113,7 +115,7 @@ DISTFILES_CACHE=/usr/ports/distfiles
 # If this port's PKGNAME were really "List-MoreUtils" then it would
 # not be recorded into the resulting package.  The next build with
 # CHECK_CHANGED_DEPS enabled would consider it a "new dependency"
-# since it is in the the port but not in the package.  This is usually
+# since it is in the port but not in the package.  This is usually
 # a warning but can be made fatal instead by enabling this option.
 # Default: no
 #BAD_PKGNAME_DEPS_ARE_FATAL=yes
@@ -306,6 +308,6 @@ DISTFILES_CACHE=/usr/ports/distfiles
 #HTML_TYPE="hosted"
 
 # Set to track remaining ports in the HTML interface.  This can slow down
-# processing of the queue slightly, especially for bulk -a bulds.
+# processing of the queue slightly, especially for bulk -a builds.
 # Default: no
 #HTML_TRACK_REMAINING=yes

@@ -5,11 +5,8 @@ DISTVERSION=	20161010
 PORTREVISION=	0
 FLAVORS=	DEFAULT FOO BAR
 FLAVOR?=	DEFAULT
-.if ${FLAVOR} != DEFAULT
+.if ${FLAVOR} != DEFAULT && !empty(FLAVORS:M${FLAVOR})
 PKGNAMESUFFIX=	-${FLAVOR}
-.endif
-.if !${FLAVORS:M${FLAVOR}}
-.error Invalid FLAVOR '${FLAVOR}'
 .endif
 CATEGORIES=	misc
 MASTER_SITES=	#
@@ -19,6 +16,10 @@ MAINTAINER=	bdrewery@FreeBSD.org
 COMMENT=	FreeBSD release manifests
 
 LICENSE=	BSD2CLAUSE
+
+.if ${FLAVOR} == FOO
+RUN_DEPENDS+=	foo:misc/foo
+.endif
 
 NO_BUILD=	yes
 NO_ARCH=	yes

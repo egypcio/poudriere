@@ -32,7 +32,7 @@ _shash_var_name() {
 	local var="${1}"
 	local _gsub
 
-	# Replace anything not SHASH_VAR_NAME_SUB_GLOB with _
+	# Replace SHASH_VAR_NAME_SUB_GLOB matches with _
 	_gsub "${var}" "${SHASH_VAR_NAME_SUB_GLOB}" _
 	_shash_var_name=${_gsub}
 }
@@ -129,13 +129,6 @@ shash_unset() {
 		cachec -s /${MASTERNAME} "unset ${var}-${key}"
 	else
 		_shash_varkey_file "${var}" "${key}"
-		case "${_shash_varkey_file}" in
-		*"*"*)
-			rm -f ${_shash_varkey_file}
-			;;
-		*)
-			unlink ${_shash_varkey_file} 2>/dev/null || :
-			;;
-		esac
+		rm -f ${_shash_varkey_file}
 	fi
 }

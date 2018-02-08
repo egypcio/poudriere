@@ -16,6 +16,7 @@ TESTS=\
 	bulk-flavor-main-dep-and-default-listed.sh \
 	bulk-flavor-main-dep-and-specific-listed.sh \
 	bulk-flavor-main-dep.sh \
+	bulk-flavor-nonexistent.sh \
 	bulk-flavor-specific-dep-and-default-listed.sh \
 	bulk-flavor-specific-dep-and-default-shorthand-listed.sh \
 	bulk-flavor-specific-dep-and-main-listed_default_all_off.sh \
@@ -24,14 +25,19 @@ TESTS=\
 	bulk-flavor-specific-dep-and-multi-listed.sh \
 	bulk-flavor-specific-dep-and-multi-no-main-listed.sh \
 	bulk-flavor-specific-dep-and-specific-listed.sh \
+	bulk-flavor-specific-dep-and-specific-listed-nonexistent.sh \
+	bulk-flavor-specific-dep-nonexistent.sh \
 	bulk-flavor-specific-dep.sh \
+	bulk-flavor-metadata-queue-ordering.sh \
+	bulk-flavor-metadata-queue-ordering-multi-pass.sh \
 	bulk-flavor-all.sh
 
-all: check
+all: check check-stock
 
 check: .PHONY
-	@echo "Running tests against stock /bin/sh"
-	@sh runtests.sh /bin/sh ${TESTS}
-	@echo
 	@echo "Running tests against modified sh"
 	@sh runtests.sh sh ${TESTS}
+
+check-stock: .PHONY
+	@echo "Running tests against stock /bin/sh"
+	@sh runtests.sh /bin/sh ${TESTS}

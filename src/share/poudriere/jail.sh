@@ -131,9 +131,11 @@ delete_jail() {
 	msg_n "Removing ${JAILNAME} jail..."
 	method=$(jget ${JAILNAME} method)
 	if [ "${method}" = "null" ]; then
-		mv -f ${JAILMNT}/etc/login.conf.orig \
-		    ${JAILMNT}/etc/login.conf
-		cap_mkdb ${JAILMNT}/etc/login.conf
+		if [ -f "${JAILMNT}/etc/login.conf.orig" ]; then
+			mv -f ${JAILMNT}/etc/login.conf.orig \
+			    ${JAILMNT}/etc/login.conf
+			cap_mkdb ${JAILMNT}/etc/login.conf
+		fi
 	else
 		TMPFS_ALL=0 destroyfs ${JAILMNT} jail || :
 	fi
@@ -218,8 +220,13 @@ hook_stop_jail() {
 }
 
 update_jail() {
-	SRC_BASE="${JAILMNT}/usr/src"
 	METHOD=$(jget ${JAILNAME} method)
+	: ${SRCPATH:=$(jget ${JAILNAME} srcpath 2>/dev/null || echo)}
+	if [ "${METHOD}" = "null" -a -n "${SRCPATH}" ]; then
+		SRC_BASE="${SRCPATH}"
+	else
+		SRC_BASE="${JAILMNT}/usr/src"
+	fi
 	if [ -z "${METHOD}" -o "${METHOD}" = "-" ]; then
 		METHOD="ftp"
 		jset ${JAILNAME} method ${METHOD}
@@ -504,7 +511,7 @@ install_from_src() {
 
 	msg_n "Copying ${SRC_BASE} to ${JAILMNT}/usr/src..."
 	mkdir -p ${JAILMNT}/usr/src
-	if [ -f ${SRC_BASE}/usr/src/.cpignore ]; then
+	if [ -f ${JAILMNT}/usr/src/.cpignore ]; then
 		cpignore_flag="-x"
 	else
 		cpignore=$(mktemp -t cpignore)
@@ -787,7 +794,11 @@ create_jail() {
 		JAILFS=${ZPOOL}${ZROOTFS}/jails/${JAILNAME}
 	fi
 
-	SRC_BASE="${JAILMNT}/usr/src"
+	if [ "${METHOD}" = "null" -a -n "${SRCPATH}" ]; then
+		SRC_BASE="${SRCPATH}"
+	else
+		SRC_BASE="${JAILMNT}/usr/src"
+	fi
 
 	case ${METHOD} in
 	ftp|http|gjb|ftp-archive|url=*)
@@ -859,8 +870,11 @@ create_jail() {
 		[ -d "${JAILMNT}" ] && \
 		    err 1 "Directory ${JAILMNT} already exists"
 	fi
-
-	createfs ${JAILNAME} ${JAILMNT} ${JAILFS:-none}
+	if [ "${METHOD}" != "null" ]; then
+		createfs ${JAILNAME} ${JAILMNT} ${JAILFS:-none}
+	elif [ ! -d "${JAILMNT}" ] || dirempty "${JAILMNT}"; then
+		err 1 "Directory ${JAILMNT} expected to be populated from installworld already."
+	fi
 	[ -n "${JAILFS}" -a "${JAILFS}" != "none" ] && jset ${JAILNAME} fs ${JAILFS}
 	if [ -n "${VERSION}" ]; then
 		jset ${JAILNAME} version ${VERSION}
@@ -882,6 +896,10 @@ create_jail() {
 	else
 		RELEASE="${VERSION}"
 	fi
+
+	[ "${METHOD}" = "null" ] && \
+	    [ ! -f "${JAILMNT}/etc/login.conf" ] && \
+	    err 1 "Directory ${JAILMNT} must be populated from installworld already."
 
 	cp -f "${JAILMNT}/etc/login.conf" "${JAILMNT}/etc/login.conf.orig"
 	update_version_env "${RELEASE}"

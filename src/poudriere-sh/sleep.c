@@ -82,7 +82,9 @@ main(int argc, char *argv[])
 	time_t original;
 	char buf[2];
 
-#ifndef SHELL
+#ifdef SHELL
+	report_requested = 0;
+#else
 	if (caph_limit_stdio() < 0 || (cap_enter() < 0 && errno != ENOSYS))
 		err(1, "capsicum");
 #endif
@@ -101,7 +103,6 @@ main(int argc, char *argv[])
 
 #ifdef SHELL
 	INTOFF;
-	memset(&oact, sizeof(oact), 0);
 	act.sa_handler = report_request;
 	sigemptyset(&act.sa_mask);
 	act.sa_flags = SA_RESTART;

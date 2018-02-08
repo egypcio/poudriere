@@ -13,7 +13,8 @@ mkdir -p "${DESTDIR}"
 DESTDIR_REAL="$(realpath "${DESTDIR}")"
 ORIG_PWD="${PWD}"
 cd "${SH_DIR}"
-export MK_TESTS=no
+export WITHOUT_TESTS=yes
+export WITHOUT_AUTO_OBJ=yes
 make cleanobj
 make clean cleandepend
 make depend
@@ -42,6 +43,9 @@ cd "${ORIG_PWD}"
 
 # Fix backwards compat for st_mtim
 sed -i '' -e 's,[[:<:]]st_mtim[[:>:]],st_mtimespec,g' "${DESTDIR}/test.c"
+# Allow interaction with traps
+sed -i '' -Ee 's,^static (char sigmode|char \*volatile trap|volatile sig_atomic_t gotsig),\1,' \
+    "${DESTDIR}external/sh/trap.c"
 
 git add -A "${DESTDIR}"
 cat <<EOF

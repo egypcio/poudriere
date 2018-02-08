@@ -78,8 +78,14 @@ html_json_main() {
 build_all_json() {
 	critical_start
 	build_json
-	build_jail_json
-	build_top_json
+	if slock_acquire "json_jail_${MASTERNAME}" 2 2>/dev/null; then
+		build_jail_json
+		slock_release "json_jail_${MASTERNAME}"
+	fi
+	if slock_acquire "json_top" 2 2>/dev/null; then
+		build_top_json
+		slock_release "json_top"
+	fi
 	critical_end
 }
 
@@ -167,6 +173,8 @@ install_html_files() {
 	local base="$2"
 	local dest="$3"
 
+	slock_acquire html_base 2>/dev/null 2 || return 0
+
 	# Update the base copy
 	mkdir -p "${base}"
 	cpdup -i0 -x "${src}" "${base}"
@@ -188,6 +196,8 @@ install_html_files() {
 	mkdir -p "${dest}"
 	# Hardlink-copy the base into the destination dir.
 	cp -xal "${base}/" "${dest}/"
+
+	slock_release html_base
 
 	# Symlink the build properly
 	ln -fs build.html "${dest}/index.html"

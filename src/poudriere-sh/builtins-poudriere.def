@@ -1,5 +1,7 @@
-cacheccmd		cachec
+#cacheccmd		cachec
 clockcmd -n		clock
+critical_startcmd -n	critical_start
+critical_endcmd -n	critical_end
 diremptycmd -n		dirempty
 locked_mkdircmd		locked_mkdir
 mkdircmd -n		mkdir
@@ -8,8 +10,11 @@ mktempcmd -n		mktemp
 pwaitcmd		pwait
 realpathcmd -n		realpath
 renamecmd -n		rename
+rmcmd -n		rm
 rmdircmd -n		rmdir
 setproctitlecmd		setproctitle
-sleepcmd		sleep
+sleepcmd -n		sleep
 touchcmd		touch
+trap_pushcmd -n		trap_push
+trap_popcmd -n		trap_pop
 unlinkcmd -n		unlink

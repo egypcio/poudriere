@@ -44,7 +44,7 @@
 
 #define min(a, b) ((a) > (b) ? (b) : (a))
 
-static time_t start;
+static struct timespec start;
 
 struct kdata {
 	FILE *fp_in;
@@ -64,7 +64,7 @@ calculate_duration(char *timestamp, size_t tlen, time_t elapsed, int type)
 	minutes = (elapsed / 60) % 60;
 	hours = elapsed / 3600;
 
-	if (type == 0)
+	if (type == 1)
 		snprintf(timestamp, tlen, "(%02d:%02d:%02d) ", hours, minutes,
 		    seconds);
 	else
@@ -76,20 +76,51 @@ static int
 prefix_output(struct kdata *kd)
 {
 	char timestamp[8 + 3 + 1]; /* '[HH:MM:SS] ' + 1 */
+	const char *prefix;
+	char prefix_override[128] = {0};
+	char *p;
 	int ch;
-	time_t elapsed, now, lastline;
+	time_t elapsed;
+	struct timespec now, lastline;
 	const size_t tlen = sizeof(timestamp);
+	size_t prefix_len;
 	bool newline;
 
+	p = NULL;
+	prefix = kd->prefix;
+	prefix_len = kd->prefix_len;
 	newline = true;
 	if (kd->timestamp_line)
-		lastline = time(NULL);
+		if (clock_gettime(CLOCK_MONOTONIC_FAST, &lastline))
+			err(EXIT_FAILURE, "%s", "clock_gettime");
 	while ((ch = getc(kd->fp_in)) != EOF) {
 		if (newline) {
+			if (ch == '\001') {
+				/* Read in a new prefix */
+				p = prefix_override;
+				while (p - prefix_override < sizeof(prefix_override)) {
+					if ((ch = getc(kd->fp_in)) == EOF)
+						goto error;
+					if (ch == '\n')
+						break;
+					*p++ = ch;
+				}
+				*p = '\0';
+				if (prefix_override[0] != '\0') {
+					prefix = prefix_override;
+					prefix_len = p - prefix_override;
+				} else {
+					prefix = kd->prefix;
+					prefix_len = kd->prefix_len;
+				}
+				continue;
+			}
 			newline = false;
+			if (kd->timestamp || kd->timestamp_line)
+				if (clock_gettime(CLOCK_MONOTONIC_FAST, &now))
+					err(EXIT_FAILURE, "%s", "clock_gettime");
 			if (kd->timestamp) {
-				now = time(NULL);
-				elapsed = now - start;
+				elapsed = now.tv_sec - start.tv_sec;
 				calculate_duration((char *)&timestamp, tlen,
 				    elapsed, 0);
 				fwrite(timestamp, tlen - 1, 1, kd->fp_out);
@@ -97,18 +128,17 @@ prefix_output(struct kdata *kd)
 					return (-1);
 			}
 			if (kd->timestamp_line) {
-				now = time(NULL);
-				elapsed = now - lastline;
+				elapsed = now.tv_sec - lastline.tv_sec;
 				calculate_duration((char *)&timestamp, tlen,
 				    elapsed, 1);
 				fwrite(timestamp, tlen - 1, 1, kd->fp_out);
 				if (ferror(kd->fp_out))
 					return (-1);
 			}
-			if (kd->prefix != NULL) {
-				if (fwrite(kd->prefix, sizeof(kd->prefix[0]),
-				    kd->prefix_len, kd->fp_out) <
-				    kd->prefix_len)
+			if (prefix != NULL) {
+				if (fwrite(prefix, sizeof(prefix[0]),
+				    prefix_len, kd->fp_out) <
+				    prefix_len)
 					return (-1);
 				if (putc(' ', kd->fp_out) == EOF)
 					return (-1);
@@ -117,11 +147,12 @@ prefix_output(struct kdata *kd)
 		if (ch == '\n' || ch == '\r') {
 			newline = true;
 			if (kd->timestamp_line)
-				lastline = time(NULL);
+				lastline = now;
 		}
 		if (putc(ch, kd->fp_out) == EOF)
 			return (-1);
 	}
+error:
 	if (ferror(kd->fp_out) || ferror(kd->fp_in) || feof(kd->fp_in))
 		return (-1);
 	return (0);
@@ -157,13 +188,15 @@ main(int argc, char **argv)
 	FILE *fp_in_stdout, *fp_in_stderr;
 	pthread_t *thr_stdout, *thr_stderr;
 	struct kdata kdata_stdout, kdata_stderr;
-	const char *prefix_stdout, *prefix_stderr;
+	const char *prefix_stdout, *prefix_stderr, *time_start;
+	char *end;
 	pid_t child_pid;
 	int child_stdout[2], child_stderr[2];
 	int ch, status, ret, done, uflag, tflag, Tflag;
 
 	child_pid = -1;
-	start = time(NULL);
+	if (clock_gettime(CLOCK_MONOTONIC_FAST, &start))
+		err(EXIT_FAILURE, "%s", "clock_gettime");
 	ret = 0;
 	done = 0;
 	tflag = Tflag = uflag = 0;
@@ -205,6 +238,14 @@ main(int argc, char **argv)
 	}
 	argc -= optind;
 	argv += optind;
+
+	if ((time_start = getenv("TIME_START")) != NULL &&
+	    strcmp(time_start, "0") != 0) {
+		errno = 0;
+		start.tv_sec = strtol(time_start, &end, 10);
+		if (start.tv_sec < 0 || *end != '\0' || errno != 0)
+			err(1, "Invalid START_TIME");
+	}
 
 	if (uflag)
 		setbuf(stdout, NULL);

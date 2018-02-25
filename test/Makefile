@@ -1,11 +1,14 @@
 TESTS=\
 	cache.sh \
 	encode_args.sh \
+	hash_basic.sh \
 	list.sh \
 	locks.sh \
 	locks_critical_section.sh \
 	locks_critical_section_nested.sh \
+	mapfile.sh \
 	port_var_fetch.sh \
+	read_file.sh \
 	relpath.sh \
 	relpath_common.sh \
 	shash_basic.sh \

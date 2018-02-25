@@ -58,6 +58,11 @@ _gsub() {
 	_gsub="${result_l}${result_r}"
 }
 
+if ! type _gsub_var_name 2>/dev/null >&2; then
+_gsub_var_name() {
+	_gsub "$1" "${HASH_VAR_NAME_SUB_GLOB}" _
+}
+fi
 
 gsub() {
 	local _gsub
@@ -70,7 +75,7 @@ _hash_var_name() {
 	local _gsub
 
 	# Replace anything not HASH_VAR_NAME_SUB_GLOB with _
-	_gsub "_HASH_${1}_${2}" "${HASH_VAR_NAME_SUB_GLOB}" _
+	_gsub_var_name "_HASH_${1}_${2}"
 	_hash_var_name=${_gsub}
 }
 
@@ -83,10 +88,15 @@ hash_isset() {
 
 	_hash_var_name "${var}" "${key}"
 
-	# Look value from cache
-	eval "_value=\${${_hash_var_name}-__null}"
+	issetvar "${_hash_var_name}"
+}
 
-	[ "${_value}" != "__null" ]
+_hash_get() {
+	[ $# -eq 2 ] || eargs _hash_get _hash_var_name var_return
+	local _hash_var_name="$1"
+	local var_return="$2"
+
+	getvar "${_hash_var_name}" "${var_return}"
 }
 
 hash_get() {
@@ -95,24 +105,11 @@ hash_get() {
 	local var="$1"
 	local key="$2"
 	local var_return="$3"
-	local _hash_var_name _value
-	local ret
+	local _hash_var_name
 
 	_hash_var_name "${var}" "${key}"
 
-	# Look value from cache
-	eval "_value=\${${_hash_var_name}-__null}"
-
-	if [ "${_value}" = "__null" ]; then
-		_value=
-		ret=1
-	else
-		ret=0
-	fi
-
-	setvar "${var_return}" "${_value}"
-
-	return ${ret}
+	_hash_get "${_hash_var_name}" "${var_return}"
 }
 
 hash_set() {
@@ -134,12 +131,14 @@ hash_remove() {
 	[ $# -ne 3 ] && eargs hash_remove var key var_return
 	local var="$1"
 	local key="$2"
-	local ret
+	local var_return="$3"
+	local _hash_var_name ret
 
+	_hash_var_name "${var}" "${key}"
 	ret=0
-	hash_get "$@" || ret=$?
+	_hash_get "${_hash_var_name}" "${var_return}" || ret=$?
 	if [ ${ret} -eq 0 ]; then
-		hash_unset "${var}" "${key}"
+		unset "${_hash_var_name}"
 	fi
 	return ${ret}
 }
@@ -155,13 +154,24 @@ hash_unset() {
 	unset "${_hash_var_name}"
 }
 
+list_contains() {
+	[ $# -eq 2 ] || eargs list_contains var item
+	local var="$1"
+	local item="$2"
+	local value
+
+	getvar "${var}" value
+	case "${value}" in *" ${item} "*) ;; *) return 1 ;; esac
+	return 0
+}
+
 list_add() {
 	[ $# -eq 2 ] || eargs list_add var item
 	local var="$1"
 	local item="$2"
 	local value
 
-	eval "value=\"\${${var}}\""
+	getvar "${var}" value
 	case "${value}" in *" ${item} "*) return 0 ;; esac
 	setvar "${var}" "${value} ${item} "
 }
@@ -172,7 +182,7 @@ list_remove() {
 	local item="$2"
 	local value
 
-	eval "value=\"\${${var}}\""
-	case "${value}" in *" ${item} "*) ;; *) return 0 ;; esac
+	getvar "${var}" value
+	case "${value}" in *" ${item} "*) ;; *) return 1 ;; esac
 	setvar "${var}" "${value% "${item}" *}${value##* "${item}" }"
 }

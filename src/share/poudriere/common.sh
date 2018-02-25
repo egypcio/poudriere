@@ -120,7 +120,7 @@ _msg_n() {
 		arrow="=>>"
 	fi
 	if [ -n "${COLOR_ARROW}" ] || [ -z "${1##*\033[*}" ]; then
-		printf "${elapsed}${DRY_MODE}${arrow:+${COLOR_ARROW}${arrow}${COLOR_RESET} }${1}${COLOR_RESET}${NL}"
+		printf "${COLOR_ARROW}${elapsed}${DRY_MODE}${arrow:+${COLOR_ARROW}${arrow}${COLOR_RESET} }${1}${COLOR_RESET}${NL}"
 	else
 		printf "${elapsed}${DRY_MODE}${arrow:+${arrow} }${1}${NL}"
 	fi
@@ -145,40 +145,52 @@ msg_error() {
 	MSG_NESTED="${MSG_NESTED_STDERR:-0}"
 	if [ -n "${MY_JOBID}" ]; then
 		# Send colored msg to bulk log...
-		COLOR_ARROW="${COLOR_ERROR}" job_msg "${COLOR_ERROR}Error: $1"
+		COLOR_ARROW="${COLOR_ERROR}" \
+		    job_msg "${COLOR_ERROR}Error:${COLOR_RESET} $1"
 		# And non-colored to buld log
 		msg "Error: $1" >&2
 	elif [ ${OUTPUT_REDIRECTED:-0} -eq 1 ]; then
 		# Send to true stderr
-		COLOR_ARROW="${COLOR_ERROR}" msg "${COLOR_ERROR}Error: $1" >&4
+		COLOR_ARROW="${COLOR_ERROR}" \
+		    msg "${COLOR_ERROR}Error:${COLOR_RESET} $1" >&4
 	else
-		COLOR_ARROW="${COLOR_ERROR}" msg "${COLOR_ERROR}Error: $1" >&2
+		COLOR_ARROW="${COLOR_ERROR}" \
+		    msg "${COLOR_ERROR}Error:${COLOR_RESET} $1" >&2
 	fi
 	return 0
 }
 
 msg_dev() {
+	local -; set +x
 	local MSG_NESTED
 
 	MSG_NESTED="${MSG_NESTED_STDERR:-0}"
 	COLOR_ARROW="${COLOR_DEV}" \
-	    _msg_n "\n" "${COLOR_DEV}Dev: $@" >&2
+	    _msg_n "\n" "${COLOR_DEV}Dev:${COLOR_RESET} $@" >&2
 }
 
 msg_debug() {
+	local -; set +x
 	local MSG_NESTED
 
 	MSG_NESTED="${MSG_NESTED_STDERR:-0}"
 	COLOR_ARROW="${COLOR_DEBUG}" \
-	    _msg_n "\n" "${COLOR_DEBUG}Debug: $@" >&2
+	    _msg_n "\n" "${COLOR_DEBUG}Debug:${COLOR_RESET} $@" >&2
 }
 
 msg_warn() {
-	local MSG_NESTED
+	local -; set +x
+	local MSG_NESTED MSG_NESTED_STDERR prefix
 
-	MSG_NESTED="${MSG_NESTED_STDERR:-0}"
+	: "${MSG_NESTED_STDERR:=0}"
+	MSG_NESTED="${MSG_NESTED_STDERR}"
+	if [ "${MSG_NESTED_STDERR}" -eq 0 ]; then
+		prefix="Warning: "
+	else
+		unset prefix
+	fi
 	COLOR_ARROW="${COLOR_WARN}" \
-	    _msg_n "\n" "${COLOR_WARN}Warning: $@" >&2
+	    _msg_n "\n" "${COLOR_WARN}${prefix}${COLOR_RESET}$@" >&2
 }
 
 job_msg() {
@@ -264,7 +276,7 @@ post_getopts() {
 }
 
 _mastermnt() {
-	local hashed_name mnt mnttest mnamelen testpath mastername
+	local hashed_name mnt mnttest mnamelen testpath mastername _gsub
 
 	mnamelen=$(grep "#define[[:space:]]MNAMELEN" \
 	    /usr/include/sys/mount.h 2>/dev/null | awk '{print $3}')
@@ -399,7 +411,7 @@ for_each_build() {
 			# If the file is missing it's a legacy build, skip it
 			# but not the entire mastername if it has a match.
 			if [ -n "${JAILNAME}" ]; then
-				if _bget jailname jailname 2>/dev/null; then
+				if _bget jailname jailname; then
 					[ "${jailname}" = "${JAILNAME}" ] || \
 					    continue 2
 				else
@@ -411,7 +423,7 @@ for_each_build() {
 				fi
 			fi
 			if [ -n "${PTNAME}" ]; then
-				if _bget ptname ptname 2>/dev/null; then
+				if _bget ptname ptname; then
 					[ "${ptname}" = "${PTNAME}" ] || \
 					    continue 2
 				else
@@ -423,7 +435,7 @@ for_each_build() {
 				fi
 			fi
 			if [ -n "${SETNAME}" ]; then
-				if _bget setname setname 2>/dev/null; then
+				if _bget setname setname; then
 					[ "${setname}" = "${SETNAME%0}" ] || \
 					    continue 2
 				else
@@ -436,9 +448,9 @@ for_each_build() {
 			fi
 			# Dereference latest into actual buildname
 			[ "${buildname}" = "latest-done" ] && \
-			    _bget BUILDNAME buildname 2>/dev/null
+			    _bget BUILDNAME buildname
 			[ "${buildname}" = "latest" ] && \
-			    _bget BUILDNAME buildname 2>/dev/null
+			    _bget BUILDNAME buildname
 			# May be blank if build is still starting up
 			[ -z "${BUILDNAME}" ] && continue 2
 
@@ -447,11 +459,11 @@ for_each_build() {
 			# Lookup jailname/setname/ptname if needed. Delayed
 			# from earlier for performance for -a
 			[ -z "${jailname+null}" ] && \
-			    _bget jailname jailname 2>/dev/null || :
+			    _bget jailname jailname || :
 			[ -z "${setname+null}" ] && \
-			    _bget setname setname 2>/dev/null || :
+			    _bget setname setname || :
 			[ -z "${ptname+null}" ] && \
-			    _bget ptname ptname 2>/dev/null || :
+			    _bget ptname ptname || :
 			log=${mastername}/${BUILDNAME}
 
 			${action} || ret=$?
@@ -731,12 +743,15 @@ log_start() {
 				# Unbuffered for 'echo -n' support.
 				# Otherwise need setbuf -o L here due to
 				# stdout not writing to terminal but to tee.
-				timestamp -u < ${logfile}.pipe | tee ${logfile} &
+				TIME_START="${TIME_START_JOB:-${TIME_START:-0}}" \
+				    timestamp -u < ${logfile}.pipe | \
+				    tee ${logfile} &
 			else
 				tee ${logfile} < ${logfile}.pipe &
 			fi
 		elif [ "${TIMESTAMP_LOGS}" = "yes" ]; then
-			timestamp > ${logfile} < ${logfile}.pipe &
+			TIME_START="${TIME_START_JOB:-${TIME_START:-0}}" \
+			    timestamp > ${logfile} < ${logfile}.pipe &
 		fi
 		tpid=$!
 		exec > ${logfile}.pipe 2>&1
@@ -871,64 +886,6 @@ log_stop() {
 	fi
 }
 
-read_file() {
-	[ $# -eq 2 ] || eargs read_file var_return file
-	local var_return="$1"
-	local file="$2"
-	local _data line
-	local ret -
-
-	# var_return may be empty if only $_read_file_lines_read is being
-	# used.
-
-	set +e
-	_data=
-	_read_file_lines_read=0
-
-	if [ ${READ_FILE_USE_CAT:-0} -eq 1 ]; then
-		if [ -f "${file}" ]; then
-			if [ -n "${var_return}" ]; then
-				_data="$(cat "${file}")"
-			fi
-			_read_file_lines_read=$(wc -l < "${file}")
-			_read_file_lines_read=${_read_file_lines_read##* }
-			ret=0
-		else
-			ret=1
-		fi
-	else
-		while :; do
-			IFS= read -r line
-			ret=$?
-			case ${ret} in
-				# Success, process data and keep reading.
-				0) ;;
-				# EOF
-				1)
-					ret=0
-					break
-					;;
-				# Some error or interruption/signal. Reread.
-				*) continue ;;
-			esac
-			if [ -n "${var_return}" ]; then
-				# Add extra newline
-				[ ${_read_file_lines_read} -gt 0 ] && \
-				    _data="${_data}
-"
-				_data="${_data}${line}"
-			fi
-			_read_file_lines_read=$((${_read_file_lines_read} + 1))
-		done < "${file}" || ret=$?
-	fi
-
-	if [ -n "${var_return}" ]; then
-		setvar "${var_return}" "${_data}"
-	fi
-
-	return ${ret}
-}
-
 attr_set() {
 	local type=$1
 	local name=$2
@@ -949,9 +906,7 @@ _attr_get() {
 	local property="$4"
 
 	read_file "${var_return}" \
-	    "${POUDRIERED}/${type}/${name}/${property}" && return 0
-	setvar "${var_return}" ""
-	return 1
+	    "${POUDRIERED}/${type}/${name}/${property}"
 }
 
 attr_get() {
@@ -983,7 +938,7 @@ _pget() {
 
 #build getter/setter
 _bget() {
-	local var_return id property mnt log file READ_FILE_USE_CAT
+	local var_return id property mnt log file READ_FILE_USE_CAT file
 
 	var_return="$1"
 	_log_path log
@@ -997,13 +952,7 @@ _bget() {
 	# Use cat(1) to read long list files.
 	[ -z "${1##ports.*}" ] && READ_FILE_USE_CAT=1
 
-	read_file "${var_return}" "${log}/${file}" && return 0
-	# It may be empty if only a count was being looked up
-	# via $_read_file_lines_read hack.
-	if [ -n "${var_return}" ]; then
-		setvar "${var_return}" ""
-	fi
-	return 1
+	read_file "${var_return}" "${log}/${file}"
 }
 
 bget() {
@@ -1018,7 +967,7 @@ bget() {
 
 bset() {
 	was_a_bulk_run || return 0
-	local id property mnt log
+	local id property mnt log file
 	_log_path log
 	if [ $# -eq 3 ]; then
 		id=$1
@@ -1041,7 +990,7 @@ bset_job_status() {
 }
 
 badd() {
-	local id property mnt log
+	local id property mnt log file
 	_log_path log
 	if [ $# -eq 3 ]; then
 		id=$1
@@ -1137,7 +1086,7 @@ exit_handler() {
 
 	if was_a_bulk_run; then
 		# build_queue socket
-		exec 6<&- 6>&- || :
+		exec 6>&- || :
 		coprocess_stop pkg_cacher
 	fi
 
@@ -1209,12 +1158,13 @@ show_dry_run_summary() {
 			fi
 			cat "${log}/.poudriere.ports.queued"
 		} | \
-		    while read originspec pkgname _ignored; do
-			# Trim away DEPENDS_ARGS for display
-			originspec_decode "${originspec}" origin '' flavor
-			originspec_encode originspec "${origin}" '' "${flavor}"
-			echo "${originspec}"
-		done | sort | tr '\n' ' '
+		    while mapfile_read_loop_redir \
+		        originspec pkgname _ignored; do
+			    # Trim away DEPENDS_ARGS for display
+			    originspec_decode "${originspec}" origin '' flavor
+			    originspec_encode originspec "${origin}" '' "${flavor}"
+			    echo "${originspec}"
+		    done | sort | tr '\n' ' '
 		echo
 	else
 		msg "No packages would be built"
@@ -1229,12 +1179,12 @@ show_build_summary() {
 
 	update_stats 2>/dev/null || return 0
 
-	_bget nbq stats_queued 2>/dev/null || nbq=0
-	_bget status status 2>/dev/null || status=unknown
-	_bget nbf stats_failed 2>/dev/null || nbf=0
-	_bget nbi stats_ignored 2>/dev/null || nbi=0
-	_bget nbs stats_skipped 2>/dev/null || nbs=0
-	_bget nbb stats_built 2>/dev/null || nbb=0
+	_bget nbq stats_queued || nbq=0
+	_bget status status || status=unknown
+	_bget nbf stats_failed || nbf=0
+	_bget nbi stats_ignored || nbi=0
+	_bget nbs stats_skipped || nbs=0
+	_bget nbb stats_built || nbb=0
 	ndone=$((nbb + nbf + nbi + nbs))
 	nbtobuild=$((nbq - ndone))
 
@@ -1249,7 +1199,7 @@ show_build_summary() {
 	fi
 
 	_log_path log
-	_bget buildname buildname 2>/dev/null || :
+	_bget buildname buildname || :
 	now=$(clock -epoch)
 
 	calculate_elapsed_from_log "${now}" "${log}" || return 1
@@ -1279,13 +1229,13 @@ siginfo_handler() {
 
 	trap '' SIGINFO
 
-	_bget status status 2>/dev/null || status=unknown
+	_bget status status || status=unknown
 	if [ "${status}" = "index:" -o "${status#stopped:}" = "crashed:" ]; then
 		enable_siginfo_handler
 		return 0
 	fi
 
-	_bget nbq stats_queued 2>/dev/null || nbq=0
+	_bget nbq stats_queued || nbq=0
 	if [ -z "${nbq}" ]; then
 		enable_siginfo_handler
 		return 0
@@ -1301,7 +1251,7 @@ siginfo_handler() {
 	    ! status_is_stopped "${status}"; then
 		for j in ${JOBS}; do
 			# Ignore error here as the zfs dataset may not be cloned yet.
-			_bget status ${j} status 2>/dev/null || :
+			_bget status ${j} status || :
 			# Skip builders not started yet
 			[ -z "${status}" ] && continue
 			# Hide idle workers
@@ -1355,12 +1305,12 @@ jail_runs() {
 }
 
 porttree_list() {
-	local name method mntpoint
+	local name method mntpoint p
 	[ -d ${POUDRIERED}/ports ] || return 0
 	for p in $(find ${POUDRIERED}/ports -type d -maxdepth 1 -mindepth 1 -print); do
 		name=${p##*/}
-		_pget mnt ${name} mnt 2>/dev/null || :
-		_pget method ${name} method 2>/dev/null || :
+		_pget mnt ${name} mnt || :
+		_pget method ${name} method || :
 		echo "${name} ${method:--} ${mnt}"
 	done
 }
@@ -1424,8 +1374,6 @@ if [ "$(type mktemp)" = "mktemp is a shell builtin" ]; then
 fi
 # Wrap mktemp to put most tmpfiles in mnt/.p/tmp rather than system /tmp.
 mktemp() {
-	local ret
-
 	if [ -z "${TMPDIR}" ]; then
 		if [ -n "${MASTERMNT}" -a ${STATUS} -eq 1 ]; then
 			local mnt
@@ -1591,7 +1539,7 @@ do_jail_mounts() {
 	local arch="$3"
 	local name="$4"
 	local devfspath="null zero random urandom stdin stdout stderr fd fd/* bpf* pts pts/*"
-	local srcpath nullpaths nullpath
+	local srcpath nullpaths nullpath p
 
 	# from==mnt is via jail -u
 
@@ -1626,7 +1574,7 @@ do_jail_mounts() {
 	done
 
 	# Mount /usr/src into target if it exists and not overridden
-	_jget srcpath ${name} srcpath 2>/dev/null || srcpath="${from}/usr/src"
+	_jget srcpath ${name} srcpath || srcpath="${from}/usr/src"
 	[ -d "${srcpath}" -a "${from}" != "${mnt}" ] && \
 	    ${NULLMOUNT} -o ro ${srcpath} ${mnt}/usr/src
 
@@ -1774,7 +1722,7 @@ do_portbuild_mounts() {
 	local ptname=$3
 	local setname=$4
 	local portsdir
-	local optionsdir
+	local optionsdir opt
 
 	# clone will inherit from the ref jail
 	if [ ${mnt##*/} = "ref" ]; then
@@ -2296,7 +2244,7 @@ jail_start() {
 	local mnt
 	local needfs="${NULLFSREF}"
 	local needkld kldpair kld kldmodname
-	local tomnt
+	local tomnt fs
 	local portbuild_uid
 
 	lock_jail
@@ -2657,7 +2605,9 @@ setup_makeconf() {
 }
 
 include_poudriere_confs() {
+	local -; set -f
 	local files file flag args_hack debug
+	local jail ptname setname
 
 	# msg_debug is not properly setup this early for VERBOSE to be set
 	# so spy on -v and set debug and use it locally instead.
@@ -2726,7 +2676,7 @@ jail_stop() {
 	export STATUS=0
 
 	# Don't override if there is a failure to grab the last status.
-	_bget last_status status 2>/dev/null || :
+	_bget last_status status || :
 	[ -n "${last_status}" ] && bset status "stopped:${last_status}" \
 	    2>/dev/null || :
 }
@@ -2902,7 +2852,7 @@ check_fs_violation() {
 	echo " done"
 
 	if [ -s ${tmpfile} ]; then
-		msg "Error: ${err_msg}"
+		msg_error "${err_msg}"
 		cat ${tmpfile}
 		bset_job_status "${status_value}" "${originspec}"
 		job_msg_verbose "Status   ${COLOR_PORT}${originspec} | ${PKGNAME}${COLOR_RESET}: ${status_value}"
@@ -3207,7 +3157,7 @@ _real_build_port() {
 			if ! injail /usr/bin/env DEVELOPER=1 ${PORT_FLAGS} \
 			    /usr/bin/make -C ${portdir} ${MAKE_ARGS} \
 			    stage-qa; then
-				msg "Error: stage-qa failures detected"
+				msg_error "stage-qa failures detected"
 				[ "${PORTTESTING_FATAL}" != "no" ] &&
 					return 1
 				die=1
@@ -3217,7 +3167,7 @@ _real_build_port() {
 			if ! injail /usr/bin/env DEVELOPER=1 ${PORT_FLAGS} \
 			    /usr/bin/make -C ${portdir} ${MAKE_ARGS} \
 			    check-plist; then
-				msg "Error: check-plist failures detected"
+				msg_error "check-plist failures detected"
 				[ "${PORTTESTING_FATAL}" != "no" ] &&
 					return 1
 				die=1
@@ -3349,18 +3299,18 @@ _real_build_port() {
 			comm -23 ${add1} ${del1} > ${add}
 			comm -13 ${add1} ${del1} > ${del}
 			if [ -s "${add}" ]; then
-				msg "Error: Files or directories left over:"
+				msg_error "Files or directories left over:"
 				die=1
 				grep -v "^@dirrm" ${add}
 				grep "^@dirrm" ${add} | sort -r
 			fi
 			if [ -s "${del}" ]; then
-				msg "Error: Files or directories removed:"
+				msg_error "Files or directories removed:"
 				die=1
 				cat ${del}
 			fi
 			if [ -s "${mod}" ]; then
-				msg "Error: Files or directories modified:"
+				msg_error "Files or directories modified:"
 				die=1
 				cat ${mod1}
 			fi
@@ -3738,7 +3688,7 @@ build_queue() {
 			idle_only=0
 		fi
 	done
-	exec 6<&- 6>&-
+	exec 6>&-
 
 	run_hook build_queue stop
 }
@@ -3746,11 +3696,11 @@ build_queue() {
 calculate_tobuild() {
 	local nbq nbb nbf nbi nbsndone nremaining
 
-	_bget nbq stats_queued 2>/dev/null || nbq=0
-	_bget nbb stats_built 2>/dev/null || nbb=0
-	_bget nbf stats_failed 2>/dev/null || nbf=0
-	_bget nbi stats_ignored 2>/dev/null || nbi=0
-	_bget nbs stats_skipped 2>/dev/null || nbs=0
+	_bget nbq stats_queued || nbq=0
+	_bget nbb stats_built || nbb=0
+	_bget nbf stats_failed || nbf=0
+	_bget nbi stats_ignored || nbi=0
+	_bget nbs stats_skipped || nbs=0
 
 	ndone=$((nbb + nbf + nbi + nbs))
 	nremaining=$((nbq - ndone))
@@ -3771,6 +3721,7 @@ calculate_elapsed_from_log() {
 	[ $# -eq 2 ] || eargs calculate_elapsed_from_log now log
 	local now="$1"
 	local log="$2"
+	local start_time start_end_time end_time
 
 	[ -f "${log}/.poudriere.status" ] || return 1
 	start_end_time=$(stat -f '%B %m' \
@@ -3898,7 +3849,7 @@ clean_pool() {
 
 	# Cleaning queue (pool is cleaned here)
 	pkgqueue_done "${pkgname}" "${clean_rdepends}" | \
-	    while read skipped_pkgname; do
+	    while mapfile_read_loop_redir skipped_pkgname; do
 		get_originspec_from_pkgname skipped_originspec "${skipped_pkgname}"
 		originspec_decode "${skipped_originspec}" skipped_origin '' ''
 		badd ports.skipped "${skipped_originspec} ${skipped_pkgname} ${pkgname}"
@@ -3936,7 +3887,7 @@ build_pkg() {
 	local ignore
 	local errortype
 	local ret=0
-	local elapsed now
+	local elapsed now _gsub
 
 	_my_path mnt
 	_my_name name
@@ -4138,7 +4089,7 @@ build_all_flavors() {
 
 # ORIGINSPEC is: ORIGIN@FLAVOR@DEPENDS_ARGS
 originspec_decode() {
-	local -; set +x
+	local -; set +x -f
 	[ $# -ne 4 ] && eargs originspec_decode originspec \
 	    var_return_origin var_return_dep_args var_return_flavor
 	local _originspec="$1"
@@ -4559,6 +4510,7 @@ pkg_get_dep_args() {
 }
 
 pkg_get_dep_origin_pkgnames() {
+	local -; set -f
 	[ $# -ne 3 ] && eargs pkg_get_dep_origin_pkgnames var_return_origins \
 	    var_return_pkgnames pkg
 	local var_return_origins="$1"
@@ -4603,7 +4555,7 @@ pkg_get_options() {
 	get_pkg_cache_dir SHASH_VAR_PATH "${pkg}"
 	if ! shash_get 'pkg' 'options' _compiled_options; then
 		_compiled_options=
-		while read key value; do
+		while mapfile_read_loop_redir key value; do
 			case "${value}" in
 				off|false) continue ;;
 			esac
@@ -5333,7 +5285,7 @@ pkgqueue_remove_many_pipe() {
 	[ $# -eq 0 ] || eargs pkgqueue_remove_many_pipe [pkgnames stdin]
 	local pkgname
 
-	while read pkgname; do
+	while mapfile_read_loop_redir pkgname; do
 		pkgqueue_find_all_pool_references "${pkgname}"
 	done | xargs rm -rf
 }
@@ -5352,12 +5304,12 @@ pkgqueue_compute_rdeps() {
 	(
 		cd "rdeps"
 		awk '{print $2}' "../${pkg_deps}" | sort -u | \
-		    while read job; do
+		    while mapfile_read_loop_redir job; do
 			pkgqueue_dir rdep_dir_name "${job}"
 			echo "${rdep_dir_name}"
 		done | xargs mkdir -p
 		awk '{print $2 " " $1}' "../${pkg_deps}" | \
-		    while read job dep; do
+		    while mapfile_read_loop_redir job dep; do
 			pkgqueue_dir rdep_dir_name "${job}"
 			echo "${rdep_dir_name}/${dep}"
 		done | xargs touch
@@ -5448,10 +5400,10 @@ have_ports_feature() {
 # port_var_fetch ports-mgmt/pkg PKGNAME pkgname PKGBASE pkgbase ...
 # Assignments are supported as well, without a subsequent variable for storage.
 port_var_fetch() {
-	local -; set +x
+	local -; set +x -f
 	[ $# -ge 3 ] || eargs port_var_fetch origin PORTVAR var_set ...
 	local origin="$1"
-	local _make_origin _makeflags _vars
+	local _make_origin _makeflags _vars ret
 	local _portvar _var _line _errexit shiftcnt varcnt
 	# Use a tab rather than space to allow FOO='BLAH BLAH' assignments
 	# and lookups like -V'${PKG_DEPENDS} ${BUILD_DEPENDS}'
@@ -5688,7 +5640,7 @@ gather_port_vars() {
 			    err 1 "Flavor ${originspec} with ALL=1"
 			parallel_run \
 			    prefix_stderr_quick \
-			    "(${COLOR_PORT}${originspec}${COLOR_RESET})${COLOR_WARN}" \
+			    "(${COLOR_PORT}${originspec}${COLOR_RESET})" \
 			    gather_port_vars_port "${originspec}" \
 			    "${rdep}" || \
 			    set_dep_fatal_error
@@ -5811,7 +5763,7 @@ gather_port_vars() {
 				    err 1 "gather_port_vars: Failed to read rdep for ${originspec}"
 				parallel_run \
 				    prefix_stderr_quick \
-				    "(${COLOR_PORT}${originspec}${COLOR_RESET})${COLOR_WARN}" \
+				    "(${COLOR_PORT}${originspec}${COLOR_RESET})" \
 				    gather_port_vars_port \
 				    "${originspec}" "${rdep}" || \
 				    set_dep_fatal_error
@@ -5926,7 +5878,7 @@ gather_port_vars_port() {
 
 	# A metadata lookup may have been queued for this port that is no
 	# longer needed.
-	if [ ${ALL} -eq 0 ] && \
+	if [ ${ALL} -eq 0 ] && [ "${rdep%% *}" != "metadata" ] && \
 	    [ -d "mqueue/${originspec%/*}!${originspec#*/}" ]; then
 		rm -rf "mqueue/${originspec%/*}!${originspec#*/}"
 	fi
@@ -6139,7 +6091,7 @@ gather_port_vars_process_depqueue_enqueue() {
 	msg_debug "gather_port_vars_process_depqueue_enqueue (${originspec}): Adding ${dep_originspec} into the ${queue} (rdep=${rdep})"
 	# Another worker may have created it
 	if mkdir "${queue}/${dep_originspec%/*}!${dep_originspec#*/}" \
-	    2>/dev/null; then
+	    2>&5; then
 		originspec_decode "${originspec}" origin '' ''
 
 		echo "${rdep}" > \
@@ -6162,6 +6114,10 @@ gather_port_vars_process_depqueue() {
 	    err 1 "gather_port_vars_process_depqueue failed to find pkgname for origin ${originspec}"
 	shash_get pkgname-deps "${pkgname}" deps || \
 	    err 1 "gather_port_vars_process_depqueue failed to find deps for pkg ${pkgname}"
+
+	# Open /dev/null in case gather_port_vars_process_depqueue_enqueue
+	# uses it, to avoid opening for every dependency.
+	[ -n "${deps}" ] && exec 5>/dev/null
 
 	originspec_decode "${originspec}" origin '' ''
 	for dep_originspec in ${deps}; do
@@ -6201,6 +6157,10 @@ gather_port_vars_process_depqueue() {
 			    "${originspec}"
 		fi
 	done
+
+	if [ -n "${deps}" ]; then
+		exec 5>&-
+	fi
 }
 
 
@@ -6217,10 +6177,10 @@ compute_deps() {
 
 	clear_dep_fatal_error
 	parallel_start
-	while read pkgname originspec _ignored; do
+	while mapfile_read_loop "all_pkgs" pkgname originspec _ignored; do
 		parallel_run compute_deps_pkg "${pkgname}" "${originspec}" \
 		    "pkg_deps.unsorted" || set_dep_fatal_error
-	done < "all_pkgs"
+	done
 	if ! parallel_stop || check_dep_fatal_error; then
 		err 1 "Fatal errors encountered calculating dependencies"
 	fi
@@ -6265,13 +6225,14 @@ compute_deps_pkg() {
 		fi
 		msg_debug "compute_deps_pkg: Will build ${dep_originspec} for ${pkgname}"
 		pkgqueue_add_dep "${pkgname}" "${dep_pkgname}"
-		echo "${pkgname} ${dep_pkgname}" >> "${pkg_deps}"
+		echo "${pkgname} ${dep_pkgname}"
 		if [ "${CHECK_CHANGED_DEPS}" != "no" ]; then
 			# Cache for call later in this func
 			hash_set compute_deps_originspec-pkgname \
 			    "${dep_originspec}" "${dep_pkgname}"
 		fi
-	done
+	done >> "${pkg_deps}"
+
 	# Check for invalid PKGNAME dependencies which break later incremental
 	# 'new dependency' detection.  This is done here rather than
 	# delete_old_pkgs since that only covers existing packages, but we
@@ -6444,7 +6405,7 @@ _listed_ports() {
 		[ -d "${portsdir}/ports" ] && portsdir="${portsdir}/ports"
 		for cat in $(awk -F= '$1 ~ /^[[:space:]]*SUBDIR[[:space:]]*\+/ {gsub(/[[:space:]]/, "", $2); print $2}' ${portsdir}/Makefile); do
 			awk -F= -v cat=${cat} '$1 ~ /^[[:space:]]*SUBDIR[[:space:]]*\+/ {gsub(/[[:space:]]/, "", $2); print cat"/"$2}' ${portsdir}/${cat}/Makefile
-		done | while read origin; do
+		done | while mapfile_read_loop_redir origin; do
 			if ! [ -d "${portsdir}/${origin}" ]; then
 				msg_warn "Nonexistent origin listed in category Makefiles: ${COLOR_PORT}${origin}${COLOR_RESET} (skipping)"
 				continue
@@ -6458,13 +6419,13 @@ _listed_ports() {
 		# -f specified
 		if [ -z "${LISTPORTS}" ]; then
 			for file in ${LISTPKGS}; do
-				while read origin; do
+				while mapfile_read_loop "${file}" origin; do
 					# Skip blank lines and comments
 					[ -z "${origin%%#*}" ] && continue
 					# Remove excess slashes for mistakes
 					origin="${origin#/}"
 					echo "${origin%/}"
-				done < "${file}"
+				done
 			done
 		else
 			# Ports specified on cmdline
@@ -6474,7 +6435,7 @@ _listed_ports() {
 				echo "${origin%/}"
 			done
 		fi
-	} | sort -u | while read originspec; do
+	} | sort -u | while mapfile_read_loop_redir originspec; do
 		originspec_decode "${originspec}" origin '' flavor
 		if [ -n "${flavor}" ] && ! have_ports_feature FLAVORS; then
 			msg_error "Trying to build FLAVOR-specific ${originspec} but ports tree has no FLAVORS support."
@@ -6616,7 +6577,7 @@ pkgqueue_list_deps_pipe() {
 	local pkgname FIND_ALL_DEPS
 
 	unset FIND_ALL_DEPS
-	while read pkgname; do
+	while mapfile_read_loop_redir pkgname; do
 		pkgqueue_list_deps_recurse "${pkgname}" | sort -u
 	done | sort -u
 }
@@ -6705,7 +6666,8 @@ load_moved() {
 	bset status "loading_moved:"
 	awk -f ${AWKPREFIX}/parse_MOVED.awk \
 	    ${MASTERMNT}${PORTSDIR}/MOVED | \
-	    while read old_origin new_origin expired_reason; do
+	    while mapfile_read_loop_redir \
+	        old_origin new_origin expired_reason; do
 		shash_set origin-moved "${old_origin}" "${new_origin}"
 		if [ "${new_origin}" = "EXPIRED" ]; then
 			shash_set origin-moved-expired "${old_origin}" \
@@ -6762,7 +6724,7 @@ clean_build_queue() {
 	msg "Cleaning the build queue"
 
 	# Delete from the queue all that already have a current package.
-	pkgqueue_list | while read pn; do
+	pkgqueue_list | while mapfile_read_loop_redir pn; do
 		[ -f "../packages/All/${pn}.${PKG_EXT}" ] && echo "${pn}"
 	done | pkgqueue_remove_many_pipe
 
@@ -6848,7 +6810,7 @@ prepare_ports() {
 		if have_ports_feature FLAVORS; then
 			if [ -n "${FLAVORS}" ] && \
 			    [ "${FLAVOR_DEFAULT_ALL}" = "yes" ]; then
-				msg_warn "Only testing first flavor '${FLAVOR}', use 'bulk -t' to test all flavors"
+				msg_warn "Only testing first flavor '${FLAVOR}', use 'bulk -t' to test all flavors: ${FLAVORS}"
 			fi
 			if [ -n "${dep_flavor}" ]; then
 				# Is it even a valid FLAVOR though?
@@ -6945,7 +6907,8 @@ prepare_ports() {
 			msg "(-C) Cleaning specified packages to build"
 			delete_pkg_list=$(mktemp -t poudriere.cleanC)
 			clear_dep_fatal_error
-			listed_pkgnames | while read pkgname; do
+			listed_pkgnames | while mapfile_read_loop_redir \
+			    pkgname; do
 				pkg="${PACKAGES}/All/${pkgname}.${PKG_EXT}"
 				if [ -f "${pkg}" ]; then
 					msg "(-C) Deleting existing package: ${pkg##*/}"
@@ -7047,10 +7010,11 @@ prepare_ports() {
 			# trimmed.
 			local _originspec _pkgname _rdep tmp
 			tmp=$(TMPDIR="${log}" mktemp -ut .queued)
-			while read _pkgname _originspec _rdep; do
+			while mapfile_read_loop "all_pkgs" \
+			    _pkgname _originspec _rdep; do
 				pkgqueue_contains "${_pkgname}" && \
 				    echo "${_originspec} ${_pkgname} ${_rdep}"
-			done < "all_pkgs" > "${tmp}"
+			done | sort > "${tmp}"
 			mv -f "${tmp}" "${log}/.poudriere.ports.queued"
 		fi
 
@@ -7094,7 +7058,7 @@ load_priorities_tsortD() {
 
 	set -f # for PRIORITY_BOOST
 	boosted=0
-	while read priority pkgname; do
+	while mapfile_read_loop "pkg_deps.depth" priority pkgname; do
 		# Does this pkg have an override?
 		for pkg_boost in ${PRIORITY_BOOST}; do
 			case ${pkgname%-*} in
@@ -7111,7 +7075,7 @@ load_priorities_tsortD() {
 			esac
 		done
 		hash_set "priority" "${pkgname}" ${priority}
-	done < "pkg_deps.depth"
+	done
 
 	# Add ${PRIORITY_BOOST_VALUE} into the pool if needed.
 	[ ${boosted} -eq 1 ] && POOL_BUCKET_DIRS="${PRIORITY_BOOST_VALUE} ${POOL_BUCKET_DIRS}"
@@ -7128,7 +7092,7 @@ load_priorities_ptsort() {
 	awk '{print $2 " " $1}' "pkg_deps" > "pkg_deps.ptsort"
 
 	# Add in boosts before running ptsort
-	while read pkgname originspec _ignored; do
+	while mapfile_read_loop "all_pkgs" pkgname originspec _ignored; do
 		# Does this pkg have an override?
 		for pkg_boost in ${PRIORITY_BOOST}; do
 			case ${pkgname%-*} in
@@ -7144,7 +7108,7 @@ load_priorities_ptsort() {
 					;;
 			esac
 		done
-	done < "all_pkgs"
+	done
 
 	ptsort -p "pkg_deps.ptsort" > \
 	    "pkg_deps.priority"
@@ -7154,9 +7118,9 @@ load_priorities_ptsort() {
 	    "pkg_deps.priority"|sort -run)
 
 	# Read all priorities into the "priority" hash
-	while read priority pkgname; do
+	while mapfile_read_loop "pkg_deps.priority" priority pkgname; do
 		hash_set "priority" "${pkgname}" ${priority}
-	done < "pkg_deps.priority"
+	done
 
 	return 0
 }
@@ -7227,7 +7191,7 @@ balance_pool() {
 			"pool/unbalanced/*") break ;;
 		esac
 		pkgname=${pkg_dir##*/}
-		hash_get "priority" "${pkgname}" dep_count || dep_count=0
+		hash_remove "priority" "${pkgname}" dep_count || dep_count=0
 		# This races with pkgqueue_get_next(), just ignore failure
 		# to move it.
 		rename "${pkg_dir}" \
@@ -7503,6 +7467,7 @@ for val in ${USE_TMPFS}; do
 	*) err 1 "Unknown value for USE_TMPFS can be a combination of wrkdir,data,all,yes,no,localbase" ;;
 	esac
 done
+unset val
 
 case ${TMPFS_WRKDIR}${TMPFS_DATA}${TMPFS_LOCALBASE}${TMPFS_ALL} in
 1**1|*1*1|**11)

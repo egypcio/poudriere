@@ -239,6 +239,7 @@ usr/src
 var/db/freebsd-update
 var/db/etcupdate
 boot/kernel.old
+nxb-bin
 EOF
 case "${MEDIATYPE}" in
 embedded)
@@ -310,15 +311,14 @@ touch ${WRKDIR}/src.conf
 [ ! -f ${POUDRIERED}/image-${JAILNAME}-${SETNAME}-src.conf ] || cat ${POUDRIERED}/image-${JAILNAME}-${SETNAME}-src.conf >> ${WRKDIR}/src.conf
 make -C ${mnt}/usr/src DESTDIR=${WRKDIR}/world BATCH_DELETE_OLD_FILES=yes SRCCONF=${WRKDIR}/src.conf delete-old delete-old-libs
 
-# Set hostname
-if [ -n "${HOSTNAME}" ]; then
-	mkdir -p ${WRKDIR}/world/etc/rc.conf.d
-	echo "hostname=${HOSTNAME}" > ${WRKDIR}/world/etc/rc.conf.d/hostname
-fi
-
 [ ! -d "${EXTRADIR}" ] || cp -fRLp ${EXTRADIR}/ ${WRKDIR}/world/
 mv ${WRKDIR}/world/etc/login.conf.orig ${WRKDIR}/world/etc/login.conf
 cap_mkdb ${WRKDIR}/world/etc/login.conf
+
+# Set hostname
+if [ -n "${HOSTNAME}" ]; then
+	echo "hostname=${HOSTNAME}" >> ${WRKDIR}/world/etc/rc.conf
+fi
 
 # install packages if any is needed
 if [ -n "${PACKAGELIST}" ]; then
@@ -449,9 +449,12 @@ usb)
 	fi
 
 	# For correct booting it needs ufs formatted /cfg and /data partitions
-	TMPFILE=`mktemp -t poudriere-firmware` || exit 1
-	makefs -B little -s ${CFG_SIZE} ${WRKDIR}/cfg.img ${TMPFILE}
-	makefs -B little -s ${DATA_SIZE} ${WRKDIR}/data.img ${TMPFILE}
+	TMPDIR=`mktemp -d -t poudriere-firmware` || exit 1
+	# Set proper permissions to this empty directory: /cfg (so /etc) and /data once mounted will inherit them
+	chmod -R 755 ${TMPDIR}
+	makefs -B little -s ${CFG_SIZE} ${WRKDIR}/cfg.img ${TMPDIR}
+	makefs -B little -s ${DATA_SIZE} ${WRKDIR}/data.img ${TMPDIR}
+	rm -rf ${TMPDIR}
 	makefs -B little -s ${OS_SIZE}m -o label=${IMAGENAME} \
 		-o version=2 ${WRKDIR}/raw.img ${WRKDIR}/world
 	;;
